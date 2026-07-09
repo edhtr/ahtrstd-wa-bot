@@ -462,7 +462,8 @@ async function mulaiKoneksi() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     connectTimeoutMs: 60000,
-    keepAliveIntervalMs: 25000,
+    keepAliveIntervalMs: 10000,   // ping ke WA setiap 10 detik agar koneksi tidak dianggap idle
+    defaultQueryTimeoutMs: 0,     // tidak ada batas waktu untuk query — penting saat pairing lambat
     syncFullHistory: false,
     markOnlineOnConnect: false,
   });
