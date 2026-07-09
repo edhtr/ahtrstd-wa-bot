@@ -1,0 +1,7 @@
+# Konfigurasi Nixpacks untuk Railway
+# Override fase install agar pakai `npm install` (bukan `npm ci`)
+# Mencegah crash "Exit handler never called" yang terjadi saat npm ci
+# memproses beberapa dep di @whiskeysockets/baileys v7.
+
+[phases.install]
+cmds = ["npm install"]

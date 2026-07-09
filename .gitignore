@@ -56,3 +56,7 @@ whatsapp-bot/auth_info_*/
 
 # WhatsApp Bot — env lokal
 whatsapp-bot/.env
+
+# WhatsApp Bot — lock file dikecualikan agar Railway pakai npm install
+# (npm ci crash dengan baileys v7 di nixpacks Railway)
+whatsapp-bot/package-lock.json
