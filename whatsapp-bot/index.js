@@ -10,6 +10,7 @@
 import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
+  fetchLatestBaileysVersion,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 
@@ -93,6 +94,11 @@ let sedangReconnect = false;
 // Apakah bot pernah berhasil terhubung penuh (connection: 'open')?
 // Dipakai untuk membedakan loggedOut-saat-pairing vs loggedOut-saat-operasional.
 let pernahTerhubung = false;
+
+// Hitung percobaan pairing gagal berturut-turut — dipakai untuk backoff
+// agar tidak membombardir server WA dengan requestPairingCode (bisa memicu
+// rate-limit sementara dari WhatsApp, yang tampak seperti "kode selalu salah").
+let percobaanPairingGagal = 0;
 
 // ============================================================
 // 5. HELPER FUNCTIONS
@@ -457,8 +463,22 @@ async function mulaiKoneksi() {
 
   const { state: authState, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
+  // Ambil versi protokol WhatsApp Web terbaru — WAJIB untuk pairing code.
+  // Baileys yang di-pin ke versi lama akan ditolak server WA saat pairing
+  // (server WA menganggap kode/koneksi tidak valid, padahal versi protokolnya
+  // yang usang), gejalanya persis "kode selalu salah" walau sudah dimasukkan benar.
+  let versiWA;
+  try {
+    const { version, isLatest } = await fetchLatestBaileysVersion();
+    versiWA = version;
+    console.log(`[VERSI] Menggunakan WA Web v${version.join('.')} (terbaru: ${isLatest})`);
+  } catch (err) {
+    console.error('[VERSI] Gagal ambil versi terbaru, pakai default bawaan Baileys:', err.message);
+  }
+
   sock = makeWASocket({
     auth: authState,
+    version: versiWA,
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     connectTimeoutMs: 60000,
@@ -510,6 +530,7 @@ async function mulaiKoneksi() {
       console.log('\n✅ [KONEKSI] Bot terhubung ke WhatsApp!\n');
       sedangReconnect = false;
       pernahTerhubung = true;
+      percobaanPairingGagal = 0;
     }
 
     if (connection === 'close') {
@@ -523,11 +544,14 @@ async function mulaiKoneksi() {
       if (statusKode === DisconnectReason.loggedOut) {
         if (!pernahTerhubung) {
           // loggedOut saat proses pairing = sesi pairing gagal/dibatalkan.
-          // Bersihkan auth dan coba pairing ulang otomatis.
-          console.log('[PAIRING] Sesi pairing gagal. Membersihkan auth dan coba ulang dalam 5 detik...');
+          // Bersihkan auth dan coba pairing ulang otomatis, dengan backoff
+          // bertahap agar tidak memicu rate-limit WhatsApp saat gagal berkali-kali.
+          percobaanPairingGagal += 1;
+          const jedaDetik = Math.min(5 * percobaanPairingGagal, 60);
+          console.log(`[PAIRING] Sesi pairing gagal (percobaan ke-${percobaanPairingGagal}). Membersihkan auth dan coba ulang dalam ${jedaDetik} detik...`);
           const fs = await import('fs/promises');
           await fs.rm(AUTH_DIR, { recursive: true, force: true });
-          await delay(5000);
+          await delay(jedaDetik * 1000);
           mulaiKoneksi();
         } else {
           // loggedOut saat bot sudah beroperasi = pengguna sengaja logout dari HP.
