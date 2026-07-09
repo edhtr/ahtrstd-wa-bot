@@ -1,4 +1,4 @@
-modules = ["nodejs-24"]
+modules = ["nodejs-20", "web", "bash"]
 
 [deployment]
 router = "application"
@@ -43,3 +43,6 @@ timeoutMs = 20000
 
 [userenv.shared]
 NOMOR_BOT = "6285186655283"
+
+[nix]
+channel = "stable-25_05"
