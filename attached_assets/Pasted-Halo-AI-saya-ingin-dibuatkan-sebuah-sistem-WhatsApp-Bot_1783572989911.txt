@@ -1,0 +1,35 @@
+Halo AI, saya ingin dibuatkan sebuah sistem WhatsApp Bot menggunakan Node.js dan library terbaru @whiskeysockets/baileys (versi murni NPM, tanpa dependensi git/github URL agar aman dideploy di platform cloud seperti Railway/Replit). 
+
+Bot ini akan berfungsi sebagai "Gatekeeper" atau penyaring tamu otomatis untuk WhatsApp rumah saya. Berikut adalah spesifikasi dan logika sistem yang harus kamu buat dalam satu file full code (index.js):
+
+1. DATABASE ANGGOTA KELUARGA & KURIR:
+   - Buat struktur array objek untuk menyimpan data keluarga. Setiap objek berisi: namaResmi, panggilanUtama, nomor WhatsApp (format: 628xxx@s.whatsapp.net), dan array alternatif panggilan (nama kecil/singkatan).
+   - Buat daftar perusahaan kurir resmi (jne, jnt, sicepat, anteraja, gojek, grab, shopee, dll).
+
+2. METODE KONEKSI (PAIRING CODE - WAJIB STABIL):
+   - Gunakan `useMultiFileAuthState` untuk menyimpan sesi di folder 'auth_info_baileys'.
+   - Tambahkan konfigurasi socket agar stabil di server cloud: `connectTimeoutMs: 60000`, `keepAliveIntervalMs: 30000`, dan `logger: pino({ level: 'silent' })`.
+   - JANGAN gunakan QR Code terminal. Gunakan metode "Pairing Code" (Tautan Nomor Telepon).
+   - PENTING: Agar tidak terkena error "Connection Closed" di cloud, pemicu `sock.requestPairingCode()` harus diletakkan di dalam event listener `creds.update` ketika status perangkat belum teregistrasi, dan berikan `delay(7000)` (jeda 7 detik) setelah koneksi terbuka agar jalur enkripsi biner (Noise Protocol) matang sepenuhnya sebelum meminta kode. Tampilkan kode 8 digit tersebut secara mencolok di console.log.
+
+3. LOGIKA GATEKEEPER / FILTER TAMU (Pesan Masuk):
+   - Jika ada nomor asing (bukan dari keluarga) mengirim pesan, bot harus menahan pesan tersebut dan memicu FORMULIR SKRINING 3 LANGKAH:
+     * Pertanyaan 1: "Siapa Nama Lengkap Anda?"
+     * Pertanyaan 2: "Siapa nama anggota keluarga di rumah ini yang ingin Anda hubungi?" (Bot harus memvalidasi input ini. Jika nama panggilan keluarga tidak cocok dengan database alternatif di nomor 1, beritahu bahwa nama salah dan minta ketik ulang).
+     * Pertanyaan 3: "Apa Tujuan/Kepentingan Anda menghubungi [Panggilan Keluarga]?"
+   - Setelah 3 pertanyaan dijawab, buat sistem antrean multi-user:
+     * KONDISI A (Kosong): Jika anggota keluarga yang dituju sedang tidak mengobrol dengan orang lain, langsung aktifkan "LIVE CHAT BRIDGE" (Jembatan Chat) dua arah antara orang asing tersebut dengan anggota keluarga terkait. Beri notifikasi ke keduanya bahwa mereka telah terhubung.
+     * KONDISI B (Sibuk): Jika anggota keluarga tersebut sedang aktif mengobrol dengan tamu lain lewat bot, masukkan tamu baru ini ke dalam antrean (FIFO). Beri tahu tamu posisi nomor antrean mereka, dan beri notifikasi interupsi senyap ke anggota keluarga bahwa ada antrean baru yang menunggu.
+
+4. LOGIKA LIVE CHAT BRIDGE & ANTI-SPAM:
+   - Selama jembatan chat aktif, semua pesan dari orang luar akan otomatis diteruskan ke keluarga, dan sebaliknya.
+   - Tambahkan fitur "Message Buffer" (Debounce): Jika salah satu pihak mengirim banyak pesan pendek berturut-turut, tahan pesan tersebut selama 2.5 detik, gabungkan dengan baris baru (`\n`), lalu kirimkan sekaligus agar tidak terjadi spam notifikasi.
+   - Jika salah satu pihak mengetik kata kunci "EXIT" (case-insensitive), matikan jembatan chat tersebut dan otomatis proses antrean berikutnya (jika ada) untuk keluarga tersebut.
+   - KHUSUS Anggota Keluarga: Jika mereka mengetik kata "Abaikan", bot harus langsung memutuskan chat dengan orang luar saat itu juga, mengirim pesan penolakan sopan ke orang luar, dan beralih memproses antrean berikutnya.
+
+5. BYPASS OTOMATIS KHUSUS KURIR PAKET:
+   - Jika pesan dari nomor asing mengandung format teks kurir (ada kata: dari/pengirim, tujuan/kepada, resi/nomor, alamat) DAN mengandung salah satu nama perusahaan kurir di database, BYPASS seluruh formulir skrining.
+   - Bot harus langsung mengirim notifikasi paket ke anggota keluarga yang namanya tertera di teks kurir tersebut.
+   - Secara otomatis, bot harus mengirimkan teks konfirmasi ke kurir dan melampirkan Kontak WhatsApp (vCard) milik anggota keluarga dituju agar kurir bisa langsung menghubungi nomor pribadi keluarga tersebut secara langsung.
+
+Tolong buatkan kode JavaScript yang bersih, terstruktur rapi, menggunakan standard CommonJS (`require`), dilengkapi dengan komentar penjelasan di setiap bagian logikanya, serta file package.json-nya.

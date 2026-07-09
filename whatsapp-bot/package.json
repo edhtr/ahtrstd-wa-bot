@@ -1,0 +1,20 @@
+{
+  "name": "whatsapp-gatekeeper-bot",
+  "version": "1.0.0",
+  "description": "WhatsApp Gatekeeper Bot - Sistem penyaring tamu otomatis menggunakan Baileys",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "pino": "^9.7.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "keywords": ["whatsapp", "bot", "baileys", "gatekeeper"],
+  "author": "",
+  "license": "MIT"
+}
