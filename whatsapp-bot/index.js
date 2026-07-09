@@ -11,6 +11,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  jidDecode,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
 
@@ -140,8 +141,26 @@ function cariKeluarga(namaInput) {
   ) || null;
 }
 
-function adalahKeluarga(jid) {
-  return DATABASE_KELUARGA.some(a => a.nomor === jid);
+// ── Dukungan JID @lid (WhatsApp privacy addressing) ──────────────────────
+// WhatsApp kadang mengirim remoteJid sebagai `<id>@lid` (bukan nomor telepon
+// asli `<nomor>@s.whatsapp.net`) untuk kontak yang memakai mode privasi baru.
+// Saat itu terjadi, Baileys menyertakan `message.key.remoteJidAlt` berisi JID
+// nomor telepon aslinya. Tanpa penanganan ini, anggota keluarga yang chat
+// lewat @lid tidak akan terdeteksi sebagai keluarga (dianggap tamu asing,
+// malah ditanyai formulir skrining 3 langkah).
+function nomorDariJid(jid) {
+  if (!jid) return null;
+  return jidDecode(jid)?.user || null;
+}
+
+/** Cari data keluarga berdasarkan jid utama DAN jid alternatif (kasus @lid). */
+function cariKeluargaByJid(jid, jidAlt) {
+  const nomorJid = nomorDariJid(jid);
+  const nomorAlt = nomorDariJid(jidAlt);
+  return DATABASE_KELUARGA.find(a => {
+    const nomorAnggota = nomorDariJid(a.nomor);
+    return nomorAnggota === nomorJid || (nomorAlt && nomorAnggota === nomorAlt);
+  }) || null;
 }
 
 function deteksiKurir(teks) {
@@ -352,6 +371,7 @@ async function prosesJawabanSkrining(guestJid, teks) {
 
 async function handlePesanMasuk(message) {
   const jid = message.key.remoteJid;
+  const jidAlt = message.key.remoteJidAlt;
   if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast' || message.key.fromMe) return;
 
   const msg = message.message;
@@ -367,21 +387,27 @@ async function handlePesanMasuk(message) {
   console.log(`[PESAN] ${jid}: "${teks.substring(0, 80)}"`);
 
   // ── BLOK A: Anggota Keluarga ──
-  if (adalahKeluarga(jid)) {
-    const bridge = stateBridge[jid];
+  // Dicocokkan lewat cariKeluargaByJid agar tetap terdeteksi walau WhatsApp
+  // mengirim remoteJid dalam format @lid (lihat komentar di adalahKeluarga).
+  const keluargaPengirim = cariKeluargaByJid(jid, jidAlt);
+  if (keluargaPengirim) {
+    // Gunakan nomor kanonik dari database sebagai kunci state, bukan jid
+    // mentah dari WhatsApp — supaya bridge/antrean konsisten walau runtime
+    // jid-nya @lid di satu sesi dan @s.whatsapp.net di sesi lain.
+    const familyJid = keluargaPengirim.nomor;
+    const bridge = stateBridge[familyJid];
     if (!bridge || !bridge.active) return;
 
     if (teks.trim().toLowerCase() === 'abaikan') {
-      await akhiriLiveChatBridge(jid, true);
+      await akhiriLiveChatBridge(familyJid, true);
       return;
     }
     if (teksUpper === 'EXIT') {
-      await akhiriLiveChatBridge(jid, false);
+      await akhiriLiveChatBridge(familyJid, false);
       return;
     }
 
-    const keluarga = DATABASE_KELUARGA.find(a => a.nomor === jid);
-    bufferDanKirimPesan(jid, bridge.guestJid, teks, `💬 *${keluarga?.panggilanUtama || 'Keluarga'}:*`);
+    bufferDanKirimPesan(familyJid, bridge.guestJid, teks, `💬 *${keluargaPengirim.panggilanUtama}:*`);
     return;
   }
 
@@ -416,7 +442,13 @@ async function handlePesanMasuk(message) {
   }
 
   // ── Deteksi Kurir (bypass skrining) ──
-  const deteksi = deteksiKurir(teks);
+  // PENTING: hanya untuk kontak yang BELUM punya sesi skrining berjalan.
+  // Sebelumnya deteksi ini jalan untuk semua pesan tamu, termasuk yang sedang
+  // menjawab Pertanyaan 1-3 — kalau jawabannya (misal alamat/tujuan) kebetulan
+  // mengandung ≥3 kata kunci kurir + nama ekspedisi, formulir "dibajak" jadi
+  // notifikasi paket palsu alih-alih lanjut ke pertanyaan berikutnya.
+  const sedangSkrining = stateScreening[jid] && stateScreening[jid].step !== 'selesai';
+  const deteksi = sedangSkrining ? null : deteksiKurir(teks);
   if (deteksi) {
     console.log(`[KURIR] Terdeteksi dari ${jid}. Kurir: ${deteksi.namaKurir}`);
     if (deteksi.targetKeluarga) {
