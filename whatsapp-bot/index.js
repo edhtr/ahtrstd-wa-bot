@@ -46,13 +46,21 @@ const KATA_KUNCI_KURIR = ['dari', 'pengirim', 'tujuan', 'kepada', 'resi', 'nomor
 // ============================================================
 
 /**
- * NOMOR_BOT  : Nomor WhatsApp bot tanpa + (contoh: 6285186655283)
+ * NOMOR_BOT  : (WAJIB) Nomor WhatsApp bot tanpa + (contoh: 6285186655283)
+ *              Set sebagai environment variable di Railway/Replit/VPS.
  * AUTH_DIR   : Path folder sesi auth (default: auth_info_baileys).
  *              Di Railway dengan volume, set ke path mount volume
  *              agar sesi tidak hilang saat redeploy.
  */
-const NOMOR_BOT = process.env.NOMOR_BOT || '6285186655283';
+const NOMOR_BOT = process.env.NOMOR_BOT || '';
 const AUTH_DIR  = process.env.AUTH_DIR  || 'auth_info_baileys';
+
+// Validasi wajib — fail-fast agar kesalahan konfigurasi terdeteksi segera
+if (!NOMOR_BOT || !/^\d{10,15}$/.test(NOMOR_BOT.trim())) {
+  console.error('[CONFIG] ❌ NOMOR_BOT tidak diset atau format tidak valid.');
+  console.error('[CONFIG]    Set environment variable NOMOR_BOT=628xxxxxxxxxx (tanpa +, 10-15 digit)');
+  process.exit(1);
+}
 
 // ============================================================
 // 4. STATE GLOBAL
