@@ -262,18 +262,29 @@ async function akhiriLiveChatBridge(familyJid, diabaikan = false) {
   await mintaKonfirmasiBerikutnya(familyJid);
 }
 
-/** Ambil tamu antrean berikutnya (jika ada) dan kirim permintaan konfirmasi ke keluarga. */
+/**
+ * Ambil tamu antrean berikutnya (jika ada) dan kirim permintaan konfirmasi ke
+ * keluarga. Dikunci dengan bridgeLock yang sama seperti mintaKonfirmasiAtauAntre
+ * agar pergerakan antrean & kedatangan tamu baru tidak saling menyalip
+ * (race condition) dan urutan FIFO tetap terjaga.
+ */
 async function mintaKonfirmasiBerikutnya(familyJid) {
-  const antrean = antreanTamu[familyJid];
-  if (!antrean || antrean.length === 0) return;
+  while (bridgeLock[familyJid]) await delay(50);
+  bridgeLock[familyJid] = true;
+  try {
+    const antrean = antreanTamu[familyJid];
+    if (!antrean || antrean.length === 0) return;
 
-  const tamuBerikutnya = antrean.shift();
-  console.log(`[ANTREAN] Kirim konfirmasi berikutnya untuk ${familyJid}: ${tamuBerikutnya.namaLengkap}`);
+    const tamuBerikutnya = antrean.shift();
+    console.log(`[ANTREAN] Kirim konfirmasi berikutnya untuk ${familyJid}: ${tamuBerikutnya.namaLengkap}`);
 
-  await kirimKonfirmasiKeKeluarga(familyJid, tamuBerikutnya);
+    await kirimKonfirmasiKeKeluarga(familyJid, tamuBerikutnya);
 
-  for (let i = 0; i < antrean.length; i++) {
-    await kirimPesan(antrean[i].guestJid, `ℹ️ Update antrean: posisi Anda sekarang *#${i + 1}*.`);
+    for (let i = 0; i < antrean.length; i++) {
+      await kirimPesan(antrean[i].guestJid, `ℹ️ Update antrean: posisi Anda sekarang *#${i + 1}*.`);
+    }
+  } finally {
+    bridgeLock[familyJid] = false;
   }
 }
 
@@ -290,8 +301,13 @@ async function mintaKonfirmasiAtauAntre(familyJid, tamuData) {
   try {
     const bridgeAktif = stateBridge[familyJid];
     const konfirmasiAktif = konfirmasiPending[familyJid];
+    const adaAntrean = antreanTamu[familyJid] && antreanTamu[familyJid].length > 0;
 
-    if ((!bridgeAktif || !bridgeAktif.active) && !konfirmasiAktif) {
+    // Tamu baru hanya boleh langsung dapat konfirmasi jika TIDAK ada bridge
+    // aktif, TIDAK ada konfirmasi tertunda, DAN antrean kosong — kalau ada
+    // tamu lain sudah menunggu di antrean, tamu baru harus ikut antre di
+    // belakang mereka (FIFO), bukan menyalip dapat giliran konfirmasi duluan.
+    if ((!bridgeAktif || !bridgeAktif.active) && !konfirmasiAktif && !adaAntrean) {
       await kirimKonfirmasiKeKeluarga(familyJid, tamuData);
     } else {
       if (!antreanTamu[familyJid]) antreanTamu[familyJid] = [];
@@ -425,26 +441,42 @@ async function handlePesanMasuk(message) {
     const teksLower = teks.trim().toLowerCase();
 
     // ── Menunggu konfirmasi: tamu BELUM terhubung, tanyakan dulu ke keluarga ──
-    const pending = konfirmasiPending[familyJid];
-    if (pending) {
-      if (teksLower === 'ya' || teksLower === 'terima') {
-        konfirmasiPending[familyJid] = null;
-        await mulaiLiveChatBridge(familyJid, pending);
-        return;
-      }
-      if (teksLower === 'abaikan') {
-        konfirmasiPending[familyJid] = null;
-        await kirimPesan(pending.guestJid,
-          `ℹ️ Maaf, *${keluargaPengirim.panggilanUtama}* sedang sibuk dan tidak dapat dihubungi saat ini. Terima kasih.`
+    // Dikunci dengan bridgeLock yang sama dipakai antrean, supaya balasan
+    // keluarga tidak diproses bersamaan dengan perpindahan antrean lain
+    // (mencegah dua tamu ter-bridge/ter-antre di posisi yang sama).
+    if (konfirmasiPending[familyJid] && !bridgeLock[familyJid]) {
+      bridgeLock[familyJid] = true;
+      try {
+        const pending = konfirmasiPending[familyJid];
+        if (!pending) return;
+
+        if (teksLower === 'ya' || teksLower === 'terima') {
+          konfirmasiPending[familyJid] = null;
+          await mulaiLiveChatBridge(familyJid, pending);
+          return;
+        }
+        if (teksLower === 'abaikan') {
+          konfirmasiPending[familyJid] = null;
+          await kirimPesan(pending.guestJid,
+            `ℹ️ Maaf, *${keluargaPengirim.panggilanUtama}* sedang sibuk dan tidak dapat dihubungi saat ini. Terima kasih.`
+          );
+          await kirimPesan(familyJid, `✅ Permintaan tamu ditolak.`);
+          delete stateScreening[pending.guestJid];
+          bridgeLock[familyJid] = false;
+          await mintaKonfirmasiBerikutnya(familyJid);
+          return;
+        }
+        await kirimPesan(familyJid,
+          `ℹ️ Ada tamu menunggu balasan Anda.\nKetik *YA* untuk menerima, atau *Abaikan* untuk menolak.`
         );
-        await kirimPesan(familyJid, `✅ Permintaan tamu ditolak.`);
-        delete stateScreening[pending.guestJid];
-        await mintaKonfirmasiBerikutnya(familyJid);
         return;
+      } finally {
+        bridgeLock[familyJid] = false;
       }
-      await kirimPesan(familyJid,
-        `ℹ️ Ada tamu menunggu balasan Anda.\nKetik *YA* untuk menerima, atau *Abaikan* untuk menolak.`
-      );
+    } else if (konfirmasiPending[familyJid]) {
+      // Lock sedang dipegang proses lain (mis. antrean sedang bergerak) —
+      // minta keluarga coba lagi sesaat lagi daripada balapan mengubah state.
+      await kirimPesan(familyJid, `ℹ️ Mohon tunggu sebentar lalu kirim ulang balasan Anda.`);
       return;
     }
 
