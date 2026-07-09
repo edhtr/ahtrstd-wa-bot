@@ -90,6 +90,10 @@ let sudahMintaPairingCode = false;
 // Guard reconnect: mencegah loop ganda
 let sedangReconnect = false;
 
+// Apakah bot pernah berhasil terhubung penuh (connection: 'open')?
+// Dipakai untuk membedakan loggedOut-saat-pairing vs loggedOut-saat-operasional.
+let pernahTerhubung = false;
+
 // ============================================================
 // 5. HELPER FUNCTIONS
 // ============================================================
@@ -458,46 +462,49 @@ async function mulaiKoneksi() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     connectTimeoutMs: 60000,
-    keepAliveIntervalMs: 30000,
+    keepAliveIntervalMs: 25000,
     syncFullHistory: false,
     markOnlineOnConnect: false,
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  sock.ev.on('connection.update', async ({ connection, lastDisconnect, qr }) => {
-    // Saat QR event muncul = server siap autentikasi.
-    // Di sinilah kita harus minta Pairing Code (bukan setelah 'open').
-    // Jeda 7 detik agar Noise Protocol matang sebelum request kode.
-    if (qr && !authState.creds.registered && !sudahMintaPairingCode) {
-      sudahMintaPairingCode = true;
-      console.log('[PAIRING] Koneksi siap. Menunggu 7 detik agar jalur enkripsi matang...');
-      await delay(7000);
-      if (!sock) return;
+  // ── Minta Pairing Code segera setelah socket dibuat ──────────────────────
+  // Dipanggil SEBELUM server memutuskan kirim QR, bukan setelah QR muncul.
+  // Jeda singkat 1,5 detik agar WebSocket selesai handshake — cukup, Noise
+  // Protocol sudah selesai di layer transport sebelum event JS apapun muncul.
+  if (!authState.creds.registered && !sudahMintaPairingCode) {
+    sudahMintaPairingCode = true;
+    console.log('[PAIRING] Meminta kode pairing (1,5 detik)...');
+    await delay(1500);
+    if (!sock) return;
 
-      try {
-        const nomorBersih = NOMOR_BOT.replace(/[^0-9]/g, '');
-        const pairingCode = await sock.requestPairingCode(nomorBersih);
+    try {
+      const nomorBersih = NOMOR_BOT.replace(/[^0-9]/g, '');
+      const pairingCode = await sock.requestPairingCode(nomorBersih);
 
-        console.log('\n╔════════════════════════════════════════╗');
-        console.log('║        KODE PAIRING WHATSAPP            ║');
-        console.log('╠════════════════════════════════════════╣');
-        console.log(`║  KODE: ${pairingCode}                    ║`);
-        console.log('╠════════════════════════════════════════╣');
-        console.log('║  1. Buka WhatsApp di HP                 ║');
-        console.log('║  2. Pengaturan → Perangkat Tertaut       ║');
-        console.log('║  3. Tautkan dengan Nomor Telepon         ║');
-        console.log('║  4. Masukkan kode di atas               ║');
-        console.log('╚════════════════════════════════════════╝\n');
-      } catch (err) {
-        console.error('[PAIRING] Gagal minta kode:', err.message);
-        sudahMintaPairingCode = false;
-      }
+      console.log('\n╔════════════════════════════════════════╗');
+      console.log('║        KODE PAIRING WHATSAPP            ║');
+      console.log('╠════════════════════════════════════════╣');
+      console.log(`║  KODE: ${pairingCode}                    ║`);
+      console.log('╠════════════════════════════════════════╣');
+      console.log('║  1. Buka WhatsApp di HP                 ║');
+      console.log('║  2. Pengaturan → Perangkat Tertaut       ║');
+      console.log('║  3. Tautkan dengan Nomor Telepon         ║');
+      console.log('║  4. Masukkan kode di atas               ║');
+      console.log('║  (kode berlaku ±60 detik)               ║');
+      console.log('╚════════════════════════════════════════╝\n');
+    } catch (err) {
+      console.error('[PAIRING] Gagal minta kode:', err.message);
+      sudahMintaPairingCode = false;
     }
+  }
 
+  sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
     if (connection === 'open') {
       console.log('\n✅ [KONEKSI] Bot terhubung ke WhatsApp!\n');
       sedangReconnect = false;
+      pernahTerhubung = true;
     }
 
     if (connection === 'close') {
@@ -509,14 +516,27 @@ async function mulaiKoneksi() {
       sock = null;
 
       if (statusKode === DisconnectReason.loggedOut) {
-        console.log('[KONEKSI] Logged out. Hapus folder auth_info_baileys dan jalankan ulang.');
-        process.exit(1);
+        if (!pernahTerhubung) {
+          // loggedOut saat proses pairing = sesi pairing gagal/dibatalkan.
+          // Bersihkan auth dan coba pairing ulang otomatis.
+          console.log('[PAIRING] Sesi pairing gagal. Membersihkan auth dan coba ulang dalam 5 detik...');
+          const fs = await import('fs/promises');
+          await fs.rm(AUTH_DIR, { recursive: true, force: true });
+          await delay(5000);
+          mulaiKoneksi();
+        } else {
+          // loggedOut saat bot sudah beroperasi = pengguna sengaja logout dari HP.
+          console.log('[KONEKSI] Logged out oleh pengguna. Bot berhenti.');
+          process.exit(1);
+        }
+        return;
       }
 
       if (!sedangReconnect) {
         sedangReconnect = true;
         console.log('[KONEKSI] Reconnect dalam 5 detik...');
         await delay(5000);
+        sedangReconnect = false;
         mulaiKoneksi();
       }
     }
