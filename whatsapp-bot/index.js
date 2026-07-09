@@ -464,6 +464,10 @@ async function mulaiKoneksi() {
     connectTimeoutMs: 60000,
     keepAliveIntervalMs: 10000,   // ping ke WA setiap 10 detik agar koneksi tidak dianggap idle
     defaultQueryTimeoutMs: 0,     // tidak ada batas waktu untuk query — penting saat pairing lambat
+    qrTimeout: 300000,            // ← FIX UTAMA: perpanjang QR timer ke 5 menit
+                                  // Baileys menjalankan QR timer (default 60 detik) bersamaan dengan
+                                  // pairing code. Saat timer habis, koneksi diputus paksa SEBELUM
+                                  // handshake companion_finish selesai → "gagal menautkan".
     syncFullHistory: false,
     markOnlineOnConnect: false,
   });
