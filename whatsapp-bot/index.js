@@ -23,28 +23,10 @@ const pino = require('pino');
 
 const DATABASE_KELUARGA = [
   {
-    namaResmi: 'Budi Santoso',
-    panggilanUtama: 'Budi',
-    nomor: '6281234567890@s.whatsapp.net',   // Ganti dengan nomor asli
-    alternatifPanggilan: ['ayah', 'pak budi', 'budi', 'bapak'],
-  },
-  {
-    namaResmi: 'Siti Rahayu',
-    panggilanUtama: 'Siti',
-    nomor: '6281234567891@s.whatsapp.net',   // Ganti dengan nomor asli
-    alternatifPanggilan: ['ibu', 'bu siti', 'siti', 'mama'],
-  },
-  {
-    namaResmi: 'Rizki Santoso',
-    panggilanUtama: 'Rizki',
-    nomor: '6281234567892@s.whatsapp.net',   // Ganti dengan nomor asli
-    alternatifPanggilan: ['rizki', 'ki', 'mas rizki', 'kakak'],
-  },
-  {
-    namaResmi: 'Devi Santoso',
-    panggilanUtama: 'Devi',
-    nomor: '6281234567893@s.whatsapp.net',   // Ganti dengan nomor asli
-    alternatifPanggilan: ['devi', 'dek devi', 'adik', 'dev'],
+    namaResmi: 'M Aidil Alamsyah',
+    panggilanUtama: 'Aidil',
+    nomor: '6285175281143@s.whatsapp.net',
+    alternatifPanggilan: ['aidil', 'edil', 'm aidil', 'm aidil alamsyah', 'edil ahtera'],
   },
 ];
 
@@ -68,7 +50,7 @@ const KATA_KUNCI_KURIR = ['dari', 'pengirim', 'tujuan', 'kepada', 'resi', 'nomor
 //    Isi dengan nomor WhatsApp yang akan dipakai bot (format: 628xxx)
 // ============================================================
 
-const NOMOR_BOT = '628xxxxxxxxxx'; // Ganti dengan nomor bot Anda
+const NOMOR_BOT = '6285186655283'; // Nomor WhatsApp bot
 
 // ============================================================
 // 4. STATE GLOBAL APLIKASI
