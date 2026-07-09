@@ -97,8 +97,8 @@ const antreanTamu = {};
  */
 const riwayatTamu = {};
 
-// Nomor urut kode tamu, naik terus selama proses bot berjalan.
-let kodeTamuCounter = 0;
+// Nomor urut kode tamu — reset otomatis ke 0 setiap hari (lihat buatKodeTamu).
+const kodeTamuHarian = { tanggal: null, counter: 0 };
 
 // Batas waktu keluarga menjawab permintaan konfirmasi sebelum otomatis
 // dianggap "sibuk" dan tamu diberi tahu tidak dapat dihubungi.
@@ -190,14 +190,23 @@ function cariKeluargaByJid(jid, jidAlt) {
 /**
  * Buat kode tamu unik, format: #<nomorUrut><NamaTanpaSpasi><DDMMYYYY>
  * Contoh: #1David09072026
+ * Nomor urut di-reset otomatis ke 0 setiap kali tanggal berganti (waktu server).
  */
-function buatKodeTamu(nomorUrut, namaLengkap) {
+function buatKodeTamu(namaLengkap) {
   const sekarang = new Date();
   const dd = String(sekarang.getDate()).padStart(2, '0');
   const mm = String(sekarang.getMonth() + 1).padStart(2, '0');
   const yyyy = sekarang.getFullYear();
+  const tanggalHariIni = `${dd}${mm}${yyyy}`;
+
+  if (kodeTamuHarian.tanggal !== tanggalHariIni) {
+    kodeTamuHarian.tanggal = tanggalHariIni;
+    kodeTamuHarian.counter = 0;
+  }
+  kodeTamuHarian.counter += 1;
+
   const namaBersih = namaLengkap.replace(/\s+/g, '');
-  return `#${nomorUrut}${namaBersih}${dd}${mm}${yyyy}`;
+  return `#${kodeTamuHarian.counter}${namaBersih}${tanggalHariIni}`;
 }
 
 function deteksiKurir(teks) {
@@ -253,12 +262,14 @@ async function mulaiLiveChatBridge(familyJid, tamuData) {
 }
 
 /**
- * Kirim permintaan konfirmasi ke anggota keluarga (tamu belum terhubung).
- * Menyalakan timer 20 menit — jika keluarga tidak membalas sama sekali,
+ * Tandai tamu sebagai "menunggu konfirmasi" keluarga (belum terhubung) dan
+ * nyalakan timer 20 menit — jika keluarga tidak membalas sama sekali,
  * konfirmasiTimeout() akan otomatis memberi tahu tamu bahwa keluarga sedang
- * sibuk, sama seperti keluarga membalas "Abaikan".
+ * sibuk, sama seperti keluarga membalas "Abaikan". Tidak mengirim pesan apa
+ * pun sendiri — pemanggil bertanggung jawab memanggil kirimPromptKonfirmasi()
+ * setelahnya agar keluarga selalu melihat daftar lengkap tamu yang menunggu.
  */
-async function kirimKonfirmasiKeKeluarga(familyJid, tamuData) {
+function pasangKonfirmasiPending(familyJid, tamuData) {
   const timer = setTimeout(() => {
     konfirmasiTimeout(familyJid).catch(err =>
       console.error('[KONFIRMASI] Gagal proses timeout:', err.message)
@@ -266,14 +277,47 @@ async function kirimKonfirmasiKeKeluarga(familyJid, tamuData) {
   }, BATAS_WAKTU_KONFIRMASI_MS);
 
   konfirmasiPending[familyJid] = { ...tamuData, timer };
-  const keluarga = DATABASE_KELUARGA.find(a => a.nomor === familyJid);
-  const panggilan = keluarga?.panggilanUtama || 'Anggota Keluarga';
+}
+
+/**
+ * Kirim pesan ke keluarga berisi tamu yang sedang menunggu konfirmasi.
+ * - Jika hanya 1 tamu menunggu (tidak ada antrean lain): tanya YA/Abaikan.
+ * - Jika lebih dari 1 tamu menunggu sekaligus (keluarga belum membalas dan
+ *   tamu baru ikut menunggu): kirim SEMUA kode tamu yang menunggu, agar
+ *   keluarga bisa pilih membalas siapa saja lewat kode tamunya.
+ */
+async function kirimPromptKonfirmasi(familyJid) {
+  const pending = konfirmasiPending[familyJid];
+  if (!pending) return;
+
+  const antrean = antreanTamu[familyJid] || [];
+  if (antrean.length === 0) {
+    await kirimPesan(familyJid,
+      `🔔 *[TAMU MENUNGGU]*\n\n👤 *${pending.namaLengkap}* (*${pending.kode}*)\n📌 _${pending.tujuan}_\n\n` +
+      `Apakah Anda ingin membalas pesan tamu ini?\nKetik *YA* untuk menerima.\nKetik *Abaikan* untuk menolak.`
+    );
+  } else {
+    await kirimDaftarTungguKeKeluarga(familyJid);
+  }
+  console.log(`[KONFIRMASI] Menunggu jawaban untuk ${pending.namaLengkap} (${pending.kode})`);
+}
+
+/** Kirim daftar SEMUA tamu (konfirmasi pending + antrean) beserta kode masing-masing. */
+async function kirimDaftarTungguKeKeluarga(familyJid) {
+  const pending = konfirmasiPending[familyJid];
+  const antrean = antreanTamu[familyJid] || [];
+  const semua = pending ? [pending, ...antrean] : [...antrean];
+  if (semua.length === 0) return;
+
+  const daftar = semua
+    .map((t, i) => `${i + 1}. *${t.kode}* — ${t.namaLengkap}\n   _${t.tujuan}_`)
+    .join('\n\n');
 
   await kirimPesan(familyJid,
-    `🔔 *[TAMU MENUNGGU]*\n\n👤 *${tamuData.namaLengkap}*\n📌 _${tamuData.tujuan}_\n\n` +
-    `Apakah Anda ingin membalas pesan tamu ini?\nKetik *YA* untuk menerima.\nKetik *Abaikan* untuk menolak.`
+    `🔔 *[${semua.length} TAMU MENUNGGU BALASAN]*\n\n${daftar}\n\n` +
+    `Ketik *kode* tamu untuk membalas tamu itu (mis. *${semua[0].kode}*).\n` +
+    `Atau ketik *YA* untuk terima tamu pertama, *Abaikan* untuk tolak tamu pertama.`
   );
-  console.log(`[KONFIRMASI] Menunggu jawaban ${panggilan} untuk tamu ${tamuData.namaLengkap}`);
 }
 
 /** Dipanggil otomatis jika keluarga tidak membalas konfirmasi dalam 20 menit. */
@@ -291,18 +335,58 @@ async function konfirmasiTimeout(familyJid) {
     const keluarga = DATABASE_KELUARGA.find(a => a.nomor === familyJid);
     const panggilan = keluarga?.panggilanUtama || 'Anggota Keluarga';
 
-    console.log(`[KONFIRMASI] Timeout 20 menit tanpa balasan dari ${panggilan} untuk ${pending.namaLengkap}`);
+    console.log(`[KONFIRMASI] Timeout 20 menit tanpa balasan dari ${panggilan} untuk ${pending.namaLengkap} (${pending.kode})`);
     await kirimPesan(pending.guestJid,
       `ℹ️ Maaf, *${panggilan}* sedang sibuk dan tidak dapat dihubungi saat ini. Terima kasih.`
     );
     await kirimPesan(familyJid,
-      `⌛ Waktu konfirmasi (20 menit) habis. Permintaan tamu *${pending.namaLengkap}* otomatis dianggap ditolak.`
+      `⌛ Waktu konfirmasi (20 menit) habis. Permintaan tamu *${pending.namaLengkap}* (*${pending.kode}*) otomatis dianggap ditolak.`
     );
     delete stateScreening[pending.guestJid];
   } finally {
     bridgeLock[familyJid] = false;
   }
   if (harusLanjutAntrean) await mintaKonfirmasiBerikutnya(familyJid);
+}
+
+/**
+ * Keluarga memilih membalas tamu tertentu yang SEDANG menunggu (baik yang
+ * lagi ditanya konfirmasi maupun yang masih di antrean) lewat kode tamunya.
+ * Dipakai saat lebih dari 1 tamu menunggu bersamaan — keluarga bebas pilih
+ * mau balas siapa duluan, tidak harus urutan FIFO.
+ * Return true jika kode ditemukan & langsung tersambung, false jika tidak
+ * ditemukan di antara tamu yang sedang menunggu (pemanggil bisa lanjut coba
+ * cari di riwayat tamu lama lewat tanganiPanggilBalik()).
+ */
+async function pilihTamuDariAntreanByKode(familyJid, kodeInput) {
+  while (bridgeLock[familyJid]) await delay(50);
+  bridgeLock[familyJid] = true;
+  try {
+    const pending = konfirmasiPending[familyJid];
+    if (pending && pending.kode === kodeInput) {
+      clearTimeout(pending.timer);
+      konfirmasiPending[familyJid] = null;
+      await mulaiLiveChatBridge(familyJid, pending);
+      return true;
+    }
+
+    const antrean = antreanTamu[familyJid] || [];
+    const idx = antrean.findIndex(t => t.kode === kodeInput);
+    if (idx === -1) return false;
+
+    const [dipilih] = antrean.splice(idx, 1);
+    // Kalau ada tamu lain yang sedang ditanya konfirmasi, jangan dibiarkan
+    // hilang — kembalikan ke depan antrean supaya tetap diproses nanti.
+    if (pending) {
+      clearTimeout(pending.timer);
+      konfirmasiPending[familyJid] = null;
+      antrean.unshift(pending);
+    }
+    await mulaiLiveChatBridge(familyJid, dipilih);
+    return true;
+  } finally {
+    bridgeLock[familyJid] = false;
+  }
 }
 
 /**
@@ -387,9 +471,10 @@ async function mintaKonfirmasiBerikutnya(familyJid) {
     if (!antrean || antrean.length === 0) return;
 
     const tamuBerikutnya = antrean.shift();
-    console.log(`[ANTREAN] Kirim konfirmasi berikutnya untuk ${familyJid}: ${tamuBerikutnya.namaLengkap}`);
+    console.log(`[ANTREAN] Kirim konfirmasi berikutnya untuk ${familyJid}: ${tamuBerikutnya.namaLengkap} (${tamuBerikutnya.kode})`);
 
-    await kirimKonfirmasiKeKeluarga(familyJid, tamuBerikutnya);
+    pasangKonfirmasiPending(familyJid, tamuBerikutnya);
+    await kirimPromptKonfirmasi(familyJid);
 
     for (let i = 0; i < antrean.length; i++) {
       await kirimPesan(antrean[i].guestJid, `ℹ️ Update antrean: posisi Anda sekarang *#${i + 1}*.`);
@@ -403,7 +488,8 @@ async function mintaKonfirmasiBerikutnya(familyJid) {
  * Masukkan tamu ke alur konfirmasi (jika keluarga sedang luang) atau ke
  * antrean (jika keluarga sedang di sesi/konfirmasi lain), dengan penguncian
  * atomik per keluarga. Tamu TIDAK langsung terhubung ke keluarga — keluarga
- * harus membalas "YA" dulu lewat kirimKonfirmasiKeKeluarga().
+ * harus membalas "YA" (atau pilih lewat kode tamu) dulu, lewat
+ * pasangKonfirmasiPending() + kirimPromptKonfirmasi().
  */
 async function mintaKonfirmasiAtauAntre(familyJid, tamuData) {
   while (bridgeLock[familyJid]) await delay(50);
@@ -419,7 +505,8 @@ async function mintaKonfirmasiAtauAntre(familyJid, tamuData) {
     // tamu lain sudah menunggu di antrean, tamu baru harus ikut antre di
     // belakang mereka (FIFO), bukan menyalip dapat giliran konfirmasi duluan.
     if ((!bridgeAktif || !bridgeAktif.active) && !konfirmasiAktif && !adaAntrean) {
-      await kirimKonfirmasiKeKeluarga(familyJid, tamuData);
+      pasangKonfirmasiPending(familyJid, tamuData);
+      await kirimPromptKonfirmasi(familyJid);
     } else {
       if (!antreanTamu[familyJid]) antreanTamu[familyJid] = [];
       antreanTamu[familyJid].push(tamuData);
@@ -430,10 +517,20 @@ async function mintaKonfirmasiAtauAntre(familyJid, tamuData) {
       await kirimPesan(tamuData.guestJid,
         `⏳ *${panggilan}* sedang berkomunikasi dengan tamu lain.\nPosisi antrean Anda: *#${posisi}*\nKami hubungi saat giliran tiba.`
       );
-      await kirimPesan(familyJid,
-        `🔔 *[INFO ANTREAN]*\nTamu baru *${tamuData.namaLengkap}* menunggu di antrean #${posisi}.\nKeperluan: _${tamuData.tujuan}_`
-      );
-      console.log(`[ANTREAN] ${tamuData.namaLengkap} di antrean #${posisi} untuk ${familyJid}`);
+
+      if (konfirmasiAktif) {
+        // Keluarga belum membalas konfirmasi sebelumnya, dan sekarang ada
+        // tamu lain lagi yang menunggu — kirim ulang daftar LENGKAP kode
+        // tamu yang menunggu, agar keluarga bisa pilih mau balas siapa.
+        await kirimDaftarTungguKeKeluarga(familyJid);
+      } else {
+        // Keluarga sedang live chat aktif dengan tamu lain — cukup info
+        // singkat, kode tamu baru ini akan muncul nanti saat gilirannya tiba.
+        await kirimPesan(familyJid,
+          `🔔 *[INFO ANTREAN]*\nTamu baru *${tamuData.namaLengkap}* (*${tamuData.kode}*) menunggu di antrean #${posisi}.\nKeperluan: _${tamuData.tujuan}_`
+        );
+      }
+      console.log(`[ANTREAN] ${tamuData.namaLengkap} (${tamuData.kode}) di antrean #${posisi} untuk ${familyJid}`);
     }
   } finally {
     bridgeLock[familyJid] = false;
@@ -488,11 +585,10 @@ async function prosesJawabanSkrining(guestJid, teks) {
   if (state.step === 1) {
     state.namaLengkap = teks.trim();
     state.step = 2;
-    kodeTamuCounter += 1;
-    state.kodeTamu = buatKodeTamu(kodeTamuCounter, state.namaLengkap);
+    // Kode tamu TIDAK diberitahukan ke tamu — hanya dikirim ke anggota
+    // keluarga nanti saat bot mulai menghubunginya (lihat kirimPromptKonfirmasi).
     await kirimPesan(guestJid,
       `Terima kasih, *${state.namaLengkap}*.\n\n` +
-      `🎫 Kode tamu Anda: *${state.kodeTamu}*\n_(Simpan kode ini. Anggota keluarga dapat menghubungi Anda kembali kapan saja dengan kode ini.)_\n\n` +
       `━━━━━━━━━━━━━━━━━━━━\n*Pertanyaan 2 dari 3:*\n` +
       `Siapa nama anggota keluarga yang ingin Anda hubungi?\n_(Ketik nama panggilan)_`
     );
@@ -518,7 +614,12 @@ async function prosesJawabanSkrining(guestJid, teks) {
     state.tujuan = teks.trim();
     state.step = 'selesai';
     const keluarga = state.targetKeluarga;
-    const tamuData = { guestJid, namaLengkap: state.namaLengkap, tujuan: state.tujuan };
+
+    // Kode tamu dibuat sekarang (saat formulir selesai / bot mulai
+    // menghubungi keluarga), BUKAN diberitahukan ke tamu — hanya keluarga
+    // yang melihatnya, lewat kirimPromptKonfirmasi()/kirimDaftarTungguKeKeluarga().
+    state.kodeTamu = buatKodeTamu(state.namaLengkap);
+    const tamuData = { guestJid, namaLengkap: state.namaLengkap, tujuan: state.tujuan, kode: state.kodeTamu };
 
     // Simpan ke riwayat tamu, dikunci dengan kode tamu — memungkinkan keluarga
     // menghubungi balik tamu ini kapan saja nanti, walau sudah lewat banyak
@@ -533,7 +634,7 @@ async function prosesJawabanSkrining(guestJid, teks) {
 
     await kirimPesan(guestJid,
       `✅ *Formulir selesai!*\n\n📋 Ringkasan:\n• Nama: ${state.namaLengkap}\n` +
-      `• Bicara dengan: ${keluarga.panggilanUtama}\n• Keperluan: ${state.tujuan}\n• Kode tamu: ${state.kodeTamu}\n\n` +
+      `• Bicara dengan: ${keluarga.panggilanUtama}\n• Keperluan: ${state.tujuan}\n\n` +
       `⏳ Mohon tunggu sebentar, kami akan menghubungkan Anda setelah *${keluarga.panggilanUtama}* bersedia membalas._`
     );
     await delay(1000);
@@ -578,7 +679,13 @@ async function handlePesanMasuk(message) {
     // Bisa dipakai kapan saja, walau sudah lewat banyak sesi lain, selama
     // keluarga sedang tidak di sesi/konfirmasi aktif lain.
     if (/^#\d/.test(teksTrim)) {
-      await tanganiPanggilBalik(familyJid, teksTrim, keluargaPengirim);
+      // Coba dulu di antara tamu yang SEDANG menunggu (konfirmasi/antrean) —
+      // relevan saat >1 tamu menunggu dan keluarga pilih mau balas siapa.
+      const dipilihDariAntrean = await pilihTamuDariAntreanByKode(familyJid, teksTrim);
+      if (!dipilihDariAntrean) {
+        // Bukan tamu yang sedang menunggu — coba cari di riwayat tamu lama.
+        await tanganiPanggilBalik(familyJid, teksTrim, keluargaPengirim);
+      }
       return;
     }
 
@@ -610,9 +717,15 @@ async function handlePesanMasuk(message) {
           await mintaKonfirmasiBerikutnya(familyJid);
           return;
         }
-        await kirimPesan(familyJid,
-          `ℹ️ Ada tamu menunggu balasan Anda.\nKetik *YA* untuk menerima, atau *Abaikan* untuk menolak.`
-        );
+        const antreanSaatIni = antreanTamu[familyJid] || [];
+        if (antreanSaatIni.length > 0) {
+          // Mode multi-tamu — arahkan keluarga memilih lewat kode, bukan YA/Abaikan generik.
+          await kirimDaftarTungguKeKeluarga(familyJid);
+        } else {
+          await kirimPesan(familyJid,
+            `ℹ️ Ada tamu menunggu balasan Anda.\nKetik *YA* untuk menerima, atau *Abaikan* untuk menolak.`
+          );
+        }
         return;
       } finally {
         bridgeLock[familyJid] = false;
