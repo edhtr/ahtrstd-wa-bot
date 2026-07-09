@@ -4,89 +4,132 @@ Sistem penyaring tamu otomatis untuk WhatsApp rumah menggunakan [@whiskeysockets
 
 ---
 
-## ⚡ Cara Setup & Menjalankan
+## 🚀 Deploy ke Railway (dari GitHub)
 
-### 1. Instal Dependensi
+### Langkah 1 — Fork / Clone repo
+Pastikan repo sudah ada di GitHub Anda.
+
+### Langkah 2 — Buat project baru di Railway
+1. Buka [railway.app](https://railway.app) → **New Project**
+2. Pilih **Deploy from GitHub repo**
+3. Pilih repo ini
+
+### Langkah 3 — Set Root Directory
+Di halaman service Railway:
+- Klik tab **Settings**
+- Di bagian **Source**, set **Root Directory** ke: `whatsapp-bot`
+
+### Langkah 4 — Set Environment Variables
+Di tab **Variables**, tambahkan:
+
+| Variable    | Nilai                    | Keterangan                                |
+|-------------|--------------------------|-------------------------------------------|
+| `NOMOR_BOT` | `6285186655283`          | Nomor WA bot (tanpa +)                    |
+| `AUTH_DIR`  | `/data/auth` *(opsional)* | Hanya jika pakai Railway Volume (lihat §) |
+
+### Langkah 5 — Deploy
+Klik **Deploy** — Railway akan otomatis `npm install` lalu `node index.js`.
+
+### Langkah 6 — Ambil Pairing Code
+Buka tab **Deployments → View Logs**. Tunggu muncul:
+
+```
+║  KODE: XXXX-XXXX  ║
+```
+
+Lalu di HP nomor bot:
+1. **Pengaturan → Perangkat Tertaut**
+2. **Tautkan dengan Nomor Telepon**
+3. Masukkan kode yang muncul di log
+
+---
+
+## 💾 Sesi Persisten dengan Railway Volume (Opsional tapi Dianjurkan)
+
+Tanpa volume, sesi WhatsApp hilang setiap kali redeploy → perlu pairing ulang.
+
+**Cara setup volume:**
+1. Di Railway project, klik **+ New** → **Volume**
+2. Mount path: `/data`
+3. Attach ke service bot
+4. Set env var `AUTH_DIR=/data/auth`
+
+Setelah itu sesi tersimpan permanen di volume meskipun redeploy.
+
+---
+
+## ⚡ Menjalankan Lokal
+
+### 1. Install dependensi
 ```bash
 cd whatsapp-bot
 npm install
 ```
 
-### 2. Konfigurasi Data Keluarga
-Buka `index.js` dan edit bagian **DATABASE ANGGOTA KELUARGA** (sekitar baris 20):
-```js
-const DATABASE_KELUARGA = [
-  {
-    namaResmi: 'Budi Santoso',          // Nama lengkap
-    panggilanUtama: 'Budi',              // Nama yang ditampilkan ke tamu
-    nomor: '6281234567890@s.whatsapp.net', // Nomor WhatsApp (format: 628xxx)
-    alternatifPanggilan: ['ayah', 'budi', 'bapak'], // Nama yang tamu bisa ketik
-  },
-  // ... tambah anggota keluarga lainnya
-];
+### 2. Salin dan edit env
+```bash
+cp .env.example .env
+# Edit .env sesuai nomor bot Anda
 ```
 
-### 3. Set Nomor Bot
-Ganti konstanta `NOMOR_BOT` dengan nomor WhatsApp yang akan digunakan bot:
-```js
-const NOMOR_BOT = '628xxxxxxxxxx'; // Tanpa + dan tanpa spasi
-```
-
-### 4. Jalankan Bot
+### 3. Jalankan
 ```bash
 npm start
 ```
 
-### 5. Pairing dengan WhatsApp
-Bot menggunakan metode **Pairing Code** (bukan QR Code). Setelah bot berjalan:
-1. Tunggu kode 8 digit muncul di console
-2. Buka WhatsApp di HP Anda
-3. Masuk ke **Pengaturan → Perangkat Tertaut → Tautkan dengan Nomor Telepon**
-4. Masukkan kode yang tampil di console
-
-Sesi tersimpan di folder `auth_info_baileys/` — tidak perlu pairing ulang setelah restart.
-
 ---
 
-## 🔧 Fitur Lengkap
+## ✏️ Konfigurasi Data Keluarga
 
-| Fitur | Keterangan |
-|-------|-----------|
-| **Formulir Skrining 3 Langkah** | Tamu baru harus menjawab: nama lengkap, nama keluarga yang dituju (divalidasi), dan tujuan |
-| **Live Chat Bridge** | Setelah skrining, pesan tamu diteruskan dua arah ke anggota keluarga |
-| **Sistem Antrean FIFO** | Jika keluarga sedang bicara dengan tamu lain, tamu baru masuk antrean dengan notifikasi posisi |
-| **Anti-Spam (Debounce)** | Pesan pendek berturut-turut digabung dalam jeda 2.5 detik sebelum dikirim |
-| **Perintah EXIT** | Ketik `EXIT` (keluarga atau tamu) untuk mengakhiri sesi |
-| **Perintah Abaikan** | Keluarga ketik `Abaikan` → tamu mendapat pesan penolakan sopan, sesi langsung putus |
-| **Bypass Kurir Otomatis** | Pesan berformat kurir langsung dideteksi, keluarga dinotifikasi, vCard dikirim ke kurir |
-| **Reconnect Otomatis** | Bot otomatis konek ulang jika terputus, tanpa duplikasi listener |
+Buka `index.js` dan edit bagian **DATABASE ANGGOTA KELUARGA** (sekitar baris 20):
 
----
-
-## 📁 Struktur File
-
-```
-whatsapp-bot/
-├── index.js              # Kode utama bot (satu file lengkap)
-├── package.json          # Dependensi NPM
-├── README.md             # Dokumentasi ini
-└── auth_info_baileys/    # Folder sesi (dibuat otomatis saat pairing)
+```js
+const DATABASE_KELUARGA = [
+  {
+    namaResmi: 'Budi Santoso',
+    panggilanUtama: 'Budi',
+    nomor: '6281234567890@s.whatsapp.net',   // format: 628xxx@s.whatsapp.net
+    alternatifPanggilan: ['ayah', 'budi', 'bapak'],
+  },
+  // tambah anggota lainnya...
+];
 ```
 
 ---
 
-## 🚀 Deploy ke Railway / Replit
+## 🔄 Alur Bot
 
-Bot ini menggunakan NPM murni tanpa URL GitHub, sehingga aman untuk semua platform cloud.
-
-**Penting:** Setelah deploy, pastikan folder `auth_info_baileys/` bersifat **persistent** (tidak terhapus saat restart). Di Railway, gunakan volume storage. Di Replit, file sudah otomatis persisten.
+```
+Tamu kirim pesan
+       ↓
+[ Formulir 3 langkah ]
+  1. Nama lengkap
+  2. Ingin bicara dengan siapa?
+  3. Keperluan apa?
+       ↓
+Anggota keluarga diberitahu → jembatan live chat terbuka
+       ↓
+Keluarga ketik EXIT → akhiri sesi & tawarkan tamu berikutnya
+Keluarga ketik Abaikan → lewati tamu ini
+```
 
 ---
 
-## 🛠 Troubleshooting
+## 🛡️ Fitur
 
-| Masalah | Solusi |
-|---------|--------|
-| Bot tidak bisa pairing | Pastikan nomor bot benar di `NOMOR_BOT`, hapus folder `auth_info_baileys/` lalu coba ulang |
-| Sesi habis / logged out | Hapus folder `auth_info_baileys/`, jalankan ulang, dan pairing ulang |
-| Pesan tidak terkirim | Cek koneksi internet server dan pastikan nomor keluarga di database sudah benar (format `628xxx@s.whatsapp.net`) |
+- **Skrining 3 langkah** sebelum terhubung ke anggota keluarga
+- **Jembatan live chat** dua arah dengan debounce 2,5 detik
+- **Antrian FIFO** jika ada beberapa tamu sekaligus
+- **Bypass kurir** — deteksi otomatis pesan pengiriman paket
+- **Pairing Code** (tidak butuh scan QR) — aman di server cloud
+- **Auto-reconnect** saat koneksi terputus
+
+---
+
+## 📦 Teknologi
+
+| Library | Versi | Keterangan |
+|---------|-------|------------|
+| `@whiskeysockets/baileys` | `7.0.0-rc13` | WhatsApp client (NPM murni) |
+| `pino` | `^9` | Logger ringan |
+| Node.js | `>=18` | Runtime |

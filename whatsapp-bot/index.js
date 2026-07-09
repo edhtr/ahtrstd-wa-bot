@@ -42,10 +42,17 @@ const DATABASE_KURIR = [
 const KATA_KUNCI_KURIR = ['dari', 'pengirim', 'tujuan', 'kepada', 'resi', 'nomor resi', 'alamat', 'paket'];
 
 // ============================================================
-// 3. NOMOR BOT
+// 3. KONFIGURASI (env var — wajib diset di Railway/VPS)
 // ============================================================
 
-const NOMOR_BOT = '6285186655283';
+/**
+ * NOMOR_BOT  : Nomor WhatsApp bot tanpa + (contoh: 6285186655283)
+ * AUTH_DIR   : Path folder sesi auth (default: auth_info_baileys).
+ *              Di Railway dengan volume, set ke path mount volume
+ *              agar sesi tidak hilang saat redeploy.
+ */
+const NOMOR_BOT = process.env.NOMOR_BOT || '6285186655283';
+const AUTH_DIR  = process.env.AUTH_DIR  || 'auth_info_baileys';
 
 // ============================================================
 // 4. STATE GLOBAL
@@ -436,7 +443,7 @@ async function handlePesanMasuk(message) {
 async function mulaiKoneksi() {
   sudahMintaPairingCode = false;
 
-  const { state: authState, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
+  const { state: authState, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
   sock = makeWASocket({
     auth: authState,

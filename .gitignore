@@ -47,3 +47,12 @@ Thumbs.db
 # Replit
 .cache/
 .local/
+
+# WhatsApp Bot — sesi autentikasi (mengandung kredensial, jangan di-commit)
+whatsapp-bot/auth_info_baileys/
+whatsapp-bot/auth_info_baileys_test/
+whatsapp-bot/auth_info_baileys_test2/
+whatsapp-bot/auth_info_*/
+
+# WhatsApp Bot — env lokal
+whatsapp-bot/.env
