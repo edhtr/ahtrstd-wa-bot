@@ -3,6 +3,7 @@
   "version": "1.0.0",
   "description": "WhatsApp Gatekeeper Bot - Sistem penyaring tamu otomatis menggunakan Baileys",
   "main": "index.js",
+  "type": "module",
   "scripts": {
     "start": "node index.js"
   },
@@ -10,7 +11,7 @@
     "node": ">=18"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.18",
+    "@whiskeysockets/baileys": "7.0.0-rc13",
     "pino": "^9.7.0",
     "qrcode-terminal": "^0.12.0"
   },
