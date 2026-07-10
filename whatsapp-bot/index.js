@@ -313,7 +313,7 @@ async function bridgeTimeout(familyJid) {
  *   mulaiChatKeluar(), jadi kirimPesanKeGuest di-set false.
  */
 async function mulaiLiveChatBridge(familyJid, tamuData, opts = {}) {
-  const { guestJid, namaLengkap, tujuan, namaPanggilanKeluarga } = tamuData;
+  const { guestJid, namaLengkap, tujuan, namaPanggilanKeluarga, pesanPertama } = tamuData;
   const { kirimPesanKeGuest = true } = opts;
   const keluarga = DATABASE_KELUARGA.find(a => a.nomor === familyJid);
   const panggilan = keluarga?.panggilanUtama || 'Anggota Keluarga';
@@ -327,6 +327,13 @@ async function mulaiLiveChatBridge(familyJid, tamuData, opts = {}) {
     `Terhubung dengan:\n👤 *${namaLengkap}*\n📌 _${tujuan}_\n\n` +
     `Ketik *EXIT* untuk mengakhiri sesi.\nKetik *N* untuk memutus & menolak tamu.`
   );
+  // Teruskan pesan PERTAMA yang diketik tamu sebelum bot menyambut &
+  // mengajukan formulir — supaya keluarga tetap tahu apa yang pertama kali
+  // ingin disampaikan tamu, terutama jika tamu tidak sadar sedang berbicara
+  // dengan bot dan sempat mengetik cukup panjang sebelum formulir dimulai.
+  if (pesanPertama && pesanPertama.trim()) {
+    await kirimPesan(familyJid, `📩 *Pesan pertama dari ${namaLengkap}:*\n${pesanPertama}`);
+  }
   if (kirimPesanKeGuest) {
     await kirimPesan(guestJid,
       `✅ *Anda telah terhubung dengan ${panggilanUntukTamu}.*\n\nSilakan sampaikan pesan Anda.`
@@ -763,8 +770,12 @@ function bufferDanKirimPesan(fromJid, toJid, teks, labelPengirim) {
 // 9. FORMULIR SKRINING 3 LANGKAH
 // ============================================================
 
-async function mulaiSkrining(guestJid) {
-  stateScreening[guestJid] = { step: 1 };
+async function mulaiSkrining(guestJid, pesanPertama) {
+  // Simpan pesan pertama yang diketik tamu SEBELUM bot menyambut &
+  // mengajukan formulir — berguna bagi tamu yang tidak tahu ini bot dan
+  // sudah keburu mengetik sesuatu yang panjang; pesan itu tetap diteruskan
+  // ke anggota keluarga saat sesi live chat terbentuk nanti, agar tidak hilang.
+  stateScreening[guestJid] = { step: 1, pesanPertama };
   await kirimPesan(guestJid,
     `👋 *Selamat datang!*\n\nAnda menghubungi sistem Gatekeeper rumah ini.\nMohon jawab beberapa pertanyaan singkat.\n` +
     `_Ketik *Batal* kapan saja untuk membatalkan percakapan ini._\n\n` +
@@ -846,6 +857,7 @@ async function prosesJawabanSkrining(guestJid, teks) {
       tujuan: state.tujuan,
       kode: state.kodeTamu,
       namaPanggilanKeluarga: state.namaPanggilanKeluarga,
+      pesanPertama: state.pesanPertama,
     };
 
     // Simpan ke riwayat tamu, dikunci dengan kode tamu — memungkinkan keluarga
@@ -857,6 +869,7 @@ async function prosesJawabanSkrining(guestJid, teks) {
       tujuan: state.tujuan,
       targetKeluargaNomor: keluarga.nomor,
       namaPanggilanKeluarga: state.namaPanggilanKeluarga,
+      pesanPertama: state.pesanPertama,
       dibuatPada: new Date(),
     };
 
@@ -995,10 +1008,20 @@ async function handlePesanMasuk(message) {
 
   // ── BLOK B: Tamu / kontak yang dihubungi keluarga (nomor asing) ──
 
-  // Cek apakah tamu sedang dalam bridge aktif
-  const bridgeEntry = Object.entries(stateBridge).find(
-    ([, val]) => val && val.active && val.guestJid === jid
-  );
+  // Cek apakah tamu sedang dalam bridge aktif.
+  // Dicocokkan lewat nomor (bukan string jid mentah) agar tetap terdeteksi
+  // walau WhatsApp membalas pakai format @lid sementara bridge dibuat
+  // dengan JID @s.whatsapp.net (atau sebaliknya) — terutama penting untuk
+  // kontak yang dihubungi keluarga lewat "Chat <nomor>", karena JID-nya
+  // dibentuk manual dan belum tentu sama persis dengan format yang dipakai
+  // WhatsApp saat kontak itu membalas.
+  const nomorJidMasuk = nomorDariJid(jid);
+  const nomorJidAltMasuk = nomorDariJid(jidAlt);
+  const bridgeEntry = Object.entries(stateBridge).find(([, val]) => {
+    if (!val || !val.active) return false;
+    const nomorBridge = nomorDariJid(val.guestJid);
+    return nomorBridge === nomorJidMasuk || (nomorJidAltMasuk && nomorBridge === nomorJidAltMasuk);
+  });
   if (bridgeEntry) {
     const [familyJid, bridgeVal] = bridgeEntry;
     // Tamu/lawan bicara TIDAK bisa mengetik EXIT untuk mengakhiri sesi —
@@ -1071,7 +1094,7 @@ async function handlePesanMasuk(message) {
   const screenState = stateScreening[jid];
   if (!screenState) {
     console.log(`[GATEKEEPER] Tamu baru: ${jid}`);
-    await mulaiSkrining(jid);
+    await mulaiSkrining(jid, teks);
     return;
   }
   if (screenState.step === 'selesai') {
