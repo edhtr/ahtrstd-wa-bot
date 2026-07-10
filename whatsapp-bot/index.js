@@ -155,6 +155,47 @@ async function kirimPesan(jid, teks) {
   }
 }
 
+/** Jenis-jenis pesan WA yang dianggap "media/fitur lain" (bukan teks biasa). */
+function apakahPesanMedia(msg) {
+  return !!(
+    msg?.imageMessage || msg?.videoMessage || msg?.audioMessage ||
+    msg?.documentMessage || msg?.documentWithCaptionMessage || msg?.stickerMessage ||
+    msg?.locationMessage || msg?.liveLocationMessage ||
+    msg?.contactMessage || msg?.contactsArrayMessage
+  );
+}
+
+/** Label singkat jenis media, dipakai di log & sebagai fallback teks caption kosong. */
+function labelJenisMedia(msg) {
+  if (msg?.imageMessage) return '🖼️ [Gambar]';
+  if (msg?.videoMessage) return '🎥 [Video]';
+  if (msg?.audioMessage) return msg.audioMessage.ptt ? '🎙️ [Pesan Suara]' : '🎵 [Audio]';
+  if (msg?.documentMessage || msg?.documentWithCaptionMessage) return '📄 [Dokumen]';
+  if (msg?.stickerMessage) return '🌟 [Stiker]';
+  if (msg?.locationMessage || msg?.liveLocationMessage) return '📍 [Lokasi]';
+  if (msg?.contactMessage || msg?.contactsArrayMessage) return '👤 [Kontak]';
+  return '[Pesan]';
+}
+
+/**
+ * Teruskan pesan APA ADANYA (gambar, video, voice note, dokumen, stiker,
+ * lokasi, kontak, dll.) dari satu sesi live chat ke sisi lainnya, memakai
+ * fitur forward bawaan Baileys agar tidak perlu unduh+unggah ulang manual
+ * untuk tiap jenis media. Label pengirim dikirim sebagai pesan teks singkat
+ * terlebih dahulu (media hasil forward tidak bisa disisipi label langsung).
+ */
+async function teruskanPesanMedia(toJid, message, labelPengirim) {
+  if (!sock) return;
+  try {
+    if (labelPengirim) {
+      await kirimPesan(toJid, `${labelPengirim} ${labelJenisMedia(message.message)}`);
+    }
+    await sock.sendMessage(toJid, { forward: message });
+  } catch (err) {
+    console.error(`[ERROR] Gagal meneruskan media ke ${toJid}:`, err.message);
+  }
+}
+
 async function kirimKontakVCard(tujuanJid, anggota) {
   if (!sock) return;
   try {
@@ -313,27 +354,22 @@ async function bridgeTimeout(familyJid) {
  *   mulaiChatKeluar(), jadi kirimPesanKeGuest di-set false.
  */
 async function mulaiLiveChatBridge(familyJid, tamuData, opts = {}) {
-  const { guestJid, namaLengkap, tujuan, namaPanggilanKeluarga, pesanPertama } = tamuData;
-  const { kirimPesanKeGuest = true } = opts;
+  const { guestJid, namaLengkap, namaPanggilanKeluarga } = tamuData;
+  const { kirimPesanKeGuest = true, dimulaiOlehKeluarga = false } = opts;
   const keluarga = DATABASE_KELUARGA.find(a => a.nomor === familyJid);
   const panggilan = keluarga?.panggilanUtama || 'Anggota Keluarga';
   const panggilanUntukTamu = namaPanggilanKeluarga || panggilan;
 
-  stateBridge[familyJid] = { guestJid, active: true, namaPanggilanKeluarga: panggilanUntukTamu };
+  stateBridge[familyJid] = { guestJid, active: true, namaPanggilanKeluarga: panggilanUntukTamu, dimulaiOlehKeluarga };
   pasangBridgeTimeout(familyJid);
 
+  // Pesan pertama tamu (jika ada) sudah ditampilkan lebih awal di notifikasi
+  // "[TAMU MENUNGGU]" — jadi begitu terhubung, notifikasi keluarga cukup
+  // ringkas: nama tamu yang tersambung, tanpa mengulang tujuan/pesan pertama.
   await kirimPesan(familyJid,
-    `🔔 *[LIVE CHAT AKTIF]*\n\n` +
-    `Terhubung dengan:\n👤 *${namaLengkap}*\n📌 _${tujuan}_\n\n` +
+    `🔔 *[LIVE CHAT AKTIF]* Terhubung dengan *${namaLengkap}*.\n\n` +
     `Ketik *EXIT* untuk mengakhiri sesi.\nKetik *N* untuk memutus & menolak tamu.`
   );
-  // Teruskan pesan PERTAMA yang diketik tamu sebelum bot menyambut &
-  // mengajukan formulir — supaya keluarga tetap tahu apa yang pertama kali
-  // ingin disampaikan tamu, terutama jika tamu tidak sadar sedang berbicara
-  // dengan bot dan sempat mengetik cukup panjang sebelum formulir dimulai.
-  if (pesanPertama && pesanPertama.trim()) {
-    await kirimPesan(familyJid, `📩 *Pesan pertama dari ${namaLengkap}:*\n${pesanPertama}`);
-  }
   if (kirimPesanKeGuest) {
     await kirimPesan(guestJid,
       `✅ *Anda telah terhubung dengan ${panggilanUntukTamu}.*\n\nSilakan sampaikan pesan Anda.`
@@ -373,8 +409,11 @@ async function kirimPromptKonfirmasi(familyJid) {
 
   const antrean = antreanTamu[familyJid] || [];
   if (antrean.length === 0) {
+    const barisPesanPertama = pending.pesanPertama && pending.pesanPertama.trim()
+      ? `\n💬 _"${pending.pesanPertama}"_`
+      : '';
     await kirimPesan(familyJid,
-      `🔔 *[TAMU MENUNGGU]*\n\n👤 *${pending.namaLengkap}* (*${pending.kode}*)\n📌 _${pending.tujuan}_\n\n` +
+      `🔔 *[TAMU MENUNGGU]*\n\n👤 *${pending.namaLengkap}* (*${pending.kode}*)\n📌 _${pending.tujuan}_${barisPesanPertama}\n\n` +
       `Apakah Anda bersedia membalas pesan tamu ini?\nKetik *Y* untuk menerima.\nKetik *N* untuk menolak.`
     );
   } else {
@@ -391,7 +430,12 @@ async function kirimDaftarTungguKeKeluarga(familyJid) {
   if (semua.length === 0) return;
 
   const daftar = semua
-    .map((t, i) => `${i + 1}. *${t.kode}* — ${t.namaLengkap}\n   _${t.tujuan}_`)
+    .map((t, i) => {
+      const barisPesanPertama = t.pesanPertama && t.pesanPertama.trim()
+        ? `\n   💬 _"${t.pesanPertama}"_`
+        : '';
+      return `${i + 1}. *${t.kode}* — ${t.namaLengkap}\n   _${t.tujuan}_${barisPesanPertama}`;
+    })
     .join('\n\n');
 
   await kirimPesan(familyJid,
@@ -570,7 +614,7 @@ async function mulaiChatKeluar(familyJid, keluarga, nomorInput) {
     await mulaiLiveChatBridge(
       familyJid,
       { guestJid: jidTujuan, namaLengkap: nomorTampil, tujuan: 'Dihubungi langsung oleh keluarga' },
-      { kirimPesanKeGuest: false }
+      { kirimPesanKeGuest: false, dimulaiOlehKeluarga: true }
     );
     // Sesuaikan pesan konfirmasi ke keluarga (mulaiLiveChatBridge memakai
     // label umum "👤 *${namaLengkap}*" yang di sini kita isi nomor tujuan).
@@ -898,12 +942,18 @@ async function handlePesanMasuk(message) {
     msg?.conversation ||
     msg?.extendedTextMessage?.text ||
     msg?.imageMessage?.caption ||
-    msg?.videoMessage?.caption || '';
+    msg?.videoMessage?.caption ||
+    msg?.documentMessage?.caption || '';
 
-  if (!teks) return;
+  // Pesan media/fitur lain (gambar, video, voice note, dokumen, stiker,
+  // lokasi, kontak) TIDAK dibuang walau tanpa teks/caption — akan
+  // diteruskan apa adanya lewat teruskanPesanMedia() di titik relay Blok
+  // A/B. Hanya pesan benar-benar kosong (mis. reaksi/protokol) yang diabaikan.
+  const pesanMedia = apakahPesanMedia(msg);
+  if (!teks && !pesanMedia) return;
 
   const teksUpper = teks.trim().toUpperCase();
-  console.log(`[PESAN] ${jid}: "${teks.substring(0, 80)}"`);
+  console.log(`[PESAN] ${jid}: "${pesanMedia ? labelJenisMedia(msg) : teks.substring(0, 80)}"`);
 
   // ── BLOK A: Anggota Keluarga ──
   // Dicocokkan lewat cariKeluargaByJid agar tetap terdeteksi walau WhatsApp
@@ -991,18 +1041,25 @@ async function handlePesanMasuk(message) {
 
     // ── EXIT/N hanya bisa dipakai oleh anggota keluarga — lawan bicara
     // (tamu atau kontak yang dihubungi lewat "Chat") tidak bisa mengakhiri
-    // sesi sendiri; hanya keluarga yang mengontrol sesi.
-    if (teksLower === 'n') {
+    // sesi sendiri; hanya keluarga yang mengontrol sesi. Perintah ini hanya
+    // berlaku untuk teks murni, bukan caption pada media.
+    if (!pesanMedia && teksLower === 'n') {
       await akhiriLiveChatBridge(familyJid, true);
       return;
     }
-    if (teksUpper === 'EXIT') {
+    if (!pesanMedia && teksUpper === 'EXIT') {
       await akhiriLiveChatBridge(familyJid, false);
       return;
     }
 
     pasangBridgeTimeout(familyJid);
-    bufferDanKirimPesan(familyJid, bridge.guestJid, teks, `💬 *${keluargaPengirim.panggilanUtama}:*`);
+    if (pesanMedia) {
+      // Media (gambar, video, voice note, dokumen, stiker, lokasi, kontak)
+      // diteruskan apa adanya, langsung — tidak lewat buffer debounce teks.
+      await teruskanPesanMedia(bridge.guestJid, message, `💬 *${keluargaPengirim.panggilanUtama}:*`);
+    } else {
+      bufferDanKirimPesan(familyJid, bridge.guestJid, teks, `💬 *${keluargaPengirim.panggilanUtama}:*`);
+    }
     return;
   }
 
@@ -1029,7 +1086,11 @@ async function handlePesanMasuk(message) {
     const namaLabel = stateScreening[jid]?.namaLengkap
       || (bridgeVal.dimulaiOlehKeluarga ? '+' + nomorDariJid(jid) : 'Tamu');
     pasangBridgeTimeout(familyJid);
-    bufferDanKirimPesan(jid, familyJid, teks, `📩 *${namaLabel}:*`);
+    if (pesanMedia) {
+      await teruskanPesanMedia(familyJid, message, `📩 *${namaLabel}:*`);
+    } else {
+      bufferDanKirimPesan(jid, familyJid, teks, `📩 *${namaLabel}:*`);
+    }
     return;
   }
 
