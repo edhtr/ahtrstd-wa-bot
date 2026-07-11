@@ -71,7 +71,7 @@ const AUTH_DIR  = process.env.AUTH_DIR  || 'auth_info_baileys';
  */
 const NAMA_BOT       = process.env.NAMA_BOT       || 'Islah';
 const NAMA_KELUARGA  = process.env.NAMA_KELUARGA  || 'Dil Familie';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AIzaSyAVrzXXrZxyl9PWfh-5knFUTBxrGJVhg40';
 
 // Validasi wajib — fail-fast agar kesalahan konfigurasi terdeteksi segera
 if (!NOMOR_BOT || !/^\d{10,15}$/.test(NOMOR_BOT.trim())) {
