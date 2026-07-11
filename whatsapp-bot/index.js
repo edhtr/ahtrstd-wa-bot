@@ -14,7 +14,6 @@ import makeWASocket, {
   jidDecode,
 } from '@whiskeysockets/baileys';
 import pino from 'pino';
-import { GoogleGenerativeAI } from '@google/generative-ai';
 
 // ============================================================
 // 1. DATABASE ANGGOTA KELUARGA
@@ -73,12 +72,13 @@ let geminiEnabled = false;
 
 if (GEMINI_API_KEY) {
   try {
+    const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
     geminiModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
     geminiEnabled = true;
     console.log('[GEMINI] Gemini AI aktif.');
   } catch (err) {
-    console.error('[GEMINI] Gagal inisialisasi:', err.message);
+    console.error('[GEMINI] Gagal inisialisasi (paket tidak tersedia atau API key salah):', err.message);
   }
 } else {
   console.log('[GEMINI] GEMINI_API_KEY tidak diset. Mode AI dinonaktifkan, pakai skrining 3 langkah biasa.');
