@@ -1,0 +1,28 @@
+Btw ini aku deploy di railway, jadi ubah saja dan push ke github agar railway deploy otomatis dari github.
+
+Buat agar pesan sesi chat nya bisa di edit, dan di quote reply, dan reaction, mengirim gif dan sticker, dan read receipt. Ketika ada yang menelepon maka putuskan panggilan dan bot mengirim chat.
+
+Ketika anggota keluarga ada yang ingin menghubungi orang lain dengan cara contoh Chat 08123456789 maka bot menanyakan nama anggota keluarga yang ingin ditampilkan ke tujuan (tamu), dan di anggota keluarga yang tampil adalah tamu, bukan 📩+68419399487718.
+
+hapus bagian chat ⓘ *Aidil* ingin menghubungi Anda.
+
+Jangan pakai emoji, emoji jadi emoticon text.
+Emoji hanya berlaku untuk sesi chat. ⌛︎ ጸ ⓘ ✓
+
+Nama anggota keluarga di semua sesi chat itu menampilkan nama yang ditulis oleh tamu untuk menghubungi anggota keluarga yang dituju, misal tamu yang mengetik nama edil maka nama edil yang muncul bukan Aidil, tapi jika Aidil maka yang tampil Aidil bukan edil, karena setiap tamu berbeda mengenal nama anggota keluarga ini, karena memiliki nama alternatif.
+
+Pasangkan AI Gemini untuk Bot agar juga merespon sesuai dengan AI.
+
+Untuk kepentingan/tujuan chat verifikasi setiap katanya dengan AI, agar tamu tidak bisa ketik random/ketikan huruf yg tidak memiliki kata makna yg sesuai bahasa Indonesia/inggris.
+
+Dalam sesi chat tombol exit ganti jadi N.
+
+Buat agar tamu yang chat itu hanya berinteraksi dengan AI gemini
+
+Kemudian buat tiga pertanyaan ini hanya muncul jika tamu yang chat bot ingin menghubungi salah satu anggota keluarga yang terdaftar.
+
+Misal : ada edil nya tidak? Maka Gemini menjawab, sebelum menghubungi edil kami perlu tahu apa keperluan anda dengan edil? Agar kami sambungkan anda ke edil, lalu Ai verifikasi setiap kata agar bisa memilih mana yang penting, urgent, dan tidak penting, dan AI juga bisa tahu jadwal edil dari google task milik edil, untuk mengetahui apakah edil sibuk atau tidak.
+
+AI bot dilarang memberitahukan nomor pribadi anggota keluarga.
+
+AI bot juga memverifikasi file, gambar, yang dikirim tamu agar tidak mengandung NSFW, 18+ dan file tidak boleh mengandung .apk, file yang diterima hanya pdf, powerpoint, document. Verifikasi semua link yang dibagikan oleh tamu agar anggota keluarga tetap aman.
