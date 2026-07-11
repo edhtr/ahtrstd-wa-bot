@@ -1557,16 +1557,23 @@ async function mulaiKoneksi() {
       const alasan = Object.keys(DisconnectReason).find(k => DisconnectReason[k] === statusKode) || `Kode ${statusKode}`;
       console.log(`[KONEKSI] Terputus: ${alasan}`);
 
+      sock.ev.removeAllListeners();
+      sock = null;
+
       if (statusKode === DisconnectReason.loggedOut) {
         if (!pernahTerhubung) {
+          // loggedOut saat proses pairing = sesi pairing gagal/dibatalkan.
+          // Bersihkan auth dan coba pairing ulang otomatis, dengan backoff
+          // bertahap agar tidak memicu rate-limit WhatsApp saat gagal berkali-kali.
           percobaanPairingGagal += 1;
           const jedaDetik = Math.min(5 * percobaanPairingGagal, 60);
-          console.log(`[PAIRING] Sesi pairing gagal (percobaan ke-${percobaanPairingGagal}). Coba ulang dalam ${jedaDetik} detik...`);
+          console.log(`[PAIRING] Sesi pairing gagal (percobaan ke-${percobaanPairingGagal}). Membersihkan auth dan coba ulang dalam ${jedaDetik} detik...`);
           const fs = await import('fs/promises');
           await fs.rm(AUTH_DIR, { recursive: true, force: true });
           await delay(jedaDetik * 1000);
           mulaiKoneksi();
         } else {
+          // loggedOut saat bot sudah beroperasi = pengguna sengaja logout dari HP.
           console.log('[KONEKSI] Logged out oleh pengguna. Bot berhenti.');
           process.exit(1);
         }
