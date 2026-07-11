@@ -1,8 +1,8 @@
 /**
  * ============================================================
- *  WHATSAPP GATEKEEPER BOT — v2 (dengan Gemini AI)
- *  Sistem Penyaring Tamu Otomatis + AI untuk WhatsApp Rumah
- *  Menggunakan: @whiskeysockets/baileys v7, @google/generative-ai
+ *  WHATSAPP GATEKEEPER BOT
+ *  Sistem Penyaring Tamu Otomatis untuk WhatsApp Rumah
+ *  Menggunakan: @whiskeysockets/baileys v7 (NPM murni, tanpa git URL)
  *  Style: ESM (import/export)
  * ============================================================
  */
@@ -40,41 +40,58 @@ const DATABASE_KURIR = [
   'lalamove', 'borzo', 'instant', 'paxel', 'gosend', 'grab express',
 ];
 
+// Kata kunci konten pesan kurir (minimal 3 harus ada)
 const KATA_KUNCI_KURIR = ['dari', 'pengirim', 'tujuan', 'kepada', 'resi', 'nomor resi', 'alamat', 'paket'];
 
-// Ekstensi file yang DIIZINKAN (selain gambar/video yang diverifikasi tersendiri)
+// Ekstensi file yang DIIZINKAN
 const EKSTENSI_DIIZINKAN = ['.pdf', '.ppt', '.pptx', '.doc', '.docx', '.xls', '.xlsx', '.txt', '.csv'];
 // Ekstensi yang DIBLOKIR
-const EKSTENSI_DIBLOKIR = ['.apk', '.exe', '.bat', '.sh', '.cmd', '.msi', '.dmg', '.deb', '.rpm', '.ipa'];
+const EKSTENSI_DIBLOKIR  = ['.apk', '.exe', '.bat', '.sh', '.cmd', '.msi', '.dmg', '.deb', '.rpm', '.ipa'];
 
 // ============================================================
-// 3. KONFIGURASI
+// 3. KONFIGURASI (env var — wajib diset di Railway/VPS)
 // ============================================================
 
-const NOMOR_BOT      = process.env.NOMOR_BOT      || '';
-const AUTH_DIR       = process.env.AUTH_DIR        || 'auth_info_baileys';
-const NAMA_BOT       = process.env.NAMA_BOT        || 'Islah';
-const NAMA_KELUARGA  = process.env.NAMA_KELUARGA   || 'Dil Familie';
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY  || '';
+/**
+ * NOMOR_BOT  : (WAJIB) Nomor WhatsApp bot tanpa + (contoh: 6285186655283)
+ *              Set sebagai environment variable di Railway/Replit/VPS.
+ * AUTH_DIR   : Path folder sesi auth (default: auth_info_baileys).
+ *              Di Railway dengan volume, set ke path mount volume
+ *              agar sesi tidak hilang saat redeploy.
+ */
+const NOMOR_BOT = process.env.NOMOR_BOT || '';
+const AUTH_DIR  = process.env.AUTH_DIR  || 'auth_info_baileys';
 
+/**
+ * NAMA_BOT      : Nama persona bot saat memperkenalkan diri ke kontak yang
+ *                 dihubungi keluarga lewat perintah "Chat <nomor>".
+ * NAMA_KELUARGA : Nama keluarga/rumah yang disebutkan bot ke kontak tersebut.
+ * GEMINI_API_KEY: (Opsional) Key Gemini AI dari Google AI Studio.
+ *                 Jika tidak diset, bot pakai skrining 3 langkah biasa.
+ */
+const NAMA_BOT       = process.env.NAMA_BOT       || 'Islah';
+const NAMA_KELUARGA  = process.env.NAMA_KELUARGA  || 'Dil Familie';
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY || '';
+
+// Validasi wajib — fail-fast agar kesalahan konfigurasi terdeteksi segera
 if (!NOMOR_BOT || !/^\d{10,15}$/.test(NOMOR_BOT.trim())) {
-  console.error('[CONFIG] NOMOR_BOT tidak diset atau format tidak valid.');
-  console.error('[CONFIG] Set environment variable NOMOR_BOT=628xxxxxxxxxx (tanpa +, 10-15 digit)');
+  console.error('[CONFIG] ❌ NOMOR_BOT tidak diset atau format tidak valid.');
+  console.error('[CONFIG]    Set environment variable NOMOR_BOT=628xxxxxxxxxx (tanpa +, 10-15 digit)');
   process.exit(1);
 }
 
 // ============================================================
-// 4. SETUP GEMINI AI
+// 4. SETUP GEMINI AI (dynamic import — bot tetap jalan tanpa paket ini)
 // ============================================================
 
-let geminiModel = null;
+let geminiModel   = null;
 let geminiEnabled = false;
 
 if (GEMINI_API_KEY) {
   try {
     const { GoogleGenerativeAI } = await import('@google/generative-ai');
     const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
-    geminiModel = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
+    geminiModel   = genAI.getGenerativeModel({ model: 'gemini-1.5-flash' });
     geminiEnabled = true;
     console.log('[GEMINI] Gemini AI aktif.');
   } catch (err) {
@@ -84,12 +101,11 @@ if (GEMINI_API_KEY) {
   console.log('[GEMINI] GEMINI_API_KEY tidak diset. Mode AI dinonaktifkan, pakai skrining 3 langkah biasa.');
 }
 
-/** Daftar nama keluarga untuk sistem prompt Gemini */
+/** Daftar nama keluarga untuk system prompt Gemini */
 const daftarNamaKeluarga = DATABASE_KELUARGA.map(a =>
   `${a.panggilanUtama} (alias: ${a.alternatifPanggilan.join(', ')})`
 ).join('; ');
 
-/** System prompt untuk Gemini saat berbicara dengan tamu */
 const SYSTEM_PROMPT_TAMU = `Anda adalah ${NAMA_BOT}, asisten virtual keluarga untuk sistem komunikasi privat ${NAMA_KELUARGA}.
 
 Tugas Anda:
@@ -120,97 +136,93 @@ FORMAT RESPONS:
 - Gunakan bahasa sopan dan formal.
 - Respons singkat dan padat, tidak lebih dari 3-4 kalimat kecuali diperlukan.`;
 
-/** System prompt untuk verifikasi teks */
 const SYSTEM_PROMPT_VERIFIKASI = `Anda adalah validator teks. Tentukan apakah teks berikut mengandung kata atau kalimat bermakna dalam bahasa Indonesia atau Inggris.
-Teks dianggap VALID jika:
-- Mengandung setidaknya 1 kata nyata yang bermakna
-- Bukan rangkaian huruf/angka acak (mis: "asdfgh", "qwerty123", "xxxx")
-- Bukan hanya simbol atau karakter khusus
-
-Teks dianggap TIDAK VALID jika:
-- Semua huruf acak tanpa makna
-- Hanya angka atau simbol
-- Terlalu pendek (kurang dari 2 karakter)
-
+Teks dianggap VALID jika mengandung setidaknya 1 kata nyata yang bermakna dan bukan rangkaian huruf/angka acak.
+Teks dianggap TIDAK VALID jika semua huruf acak tanpa makna, hanya angka atau simbol, atau terlalu pendek (kurang dari 2 karakter).
 Jawab HANYA dengan: VALID atau TIDAK_VALID`;
 
-/** System prompt untuk verifikasi link */
 const SYSTEM_PROMPT_VERIFIKASI_LINK = `Anda adalah sistem keamanan link. Analisis URL berikut dan tentukan apakah aman.
-URL dianggap BERBAHAYA jika:
-- Terlihat seperti phishing (meniru situs resmi tapi domain mencurigakan)
-- Mengandung kata kunci berbahaya (malware, hack, crack, keygen, free-money, dll.)
-- Domain sangat pendek/acak yang tidak dikenal
-- Menggunakan URL shortener yang berpotensi menyembunyikan tujuan berbahaya
-
-URL dianggap AMAN jika:
-- Domain resmi yang dikenal (google.com, youtube.com, tokopedia.com, shopee.co.id, dll.)
-- Platform media sosial resmi
-- Situs berita resmi
-- E-commerce resmi Indonesia
-
+URL dianggap BERBAHAYA jika terlihat seperti phishing, mengandung kata kunci berbahaya, atau domain sangat mencurigakan.
+URL dianggap AMAN jika domain resmi yang dikenal (google.com, youtube.com, tokopedia.com, shopee.co.id, dll.).
 Jawab HANYA dengan: AMAN atau BERBAHAYA`;
 
 // ============================================================
 // 5. STATE GLOBAL
 // ============================================================
 
-/**
- * State skrining tamu:
- * step: 0 = mode AI chat (tamu belum berniat hubungi keluarga)
- * step: 1 = tanya nama lengkap
- * step: 3 = tanya keperluan (step 2 dilewati jika target sudah diketahui AI)
- * step: 'selesai' = formulir selesai, menunggu keluarga
+/** State skrining: { [guestJid]: { step, namaLengkap?, targetKeluarga?, tujuan?, pesanPertama? } }
+ *  step: 0 = mode AI chat, 1/2/3 = langkah skrining, 'selesai' = menunggu keluarga
  */
 const stateScreening = {};
 
 /** Riwayat percakapan AI per tamu: { [guestJid]: Array<{role, parts}> } */
 const riwayatChatAI = {};
 
-/** State bridge aktif per keluarga: { [familyJid]: { guestJid, active, namaPanggilanKeluarga } | null } */
+/** Bridge aktif per keluarga: { [familyJid]: { guestJid, active } | null } */
 const stateBridge = {};
 
 /**
- * Konfirmasi menunggu per keluarga.
- * Tamu TIDAK langsung terhubung — keluarga harus balas Y dulu.
+ * Konfirmasi menunggu per keluarga: { [familyJid]: { guestJid, namaLengkap, tujuan } | null }
+ * Diisi saat tamu selesai skrining dan bot sedang menanyakan ke anggota
+ * keluarga apakah ia ingin membalas pesan tamu tersebut. Tamu TIDAK langsung
+ * terhubung — baru terhubung setelah keluarga membalas "YA".
  */
 const konfirmasiPending = {};
 
-/** Kunci atomik per keluarga untuk cegah race condition */
+/** Kunci atomik per keluarga untuk cegah race condition: { [familyJid]: boolean } */
 const bridgeLock = {};
 
-/** Antrean tamu FIFO per keluarga */
+/** Antrean tamu FIFO: { [familyJid]: Array<{ guestJid, namaLengkap, tujuan }> } */
 const antreanTamu = {};
 
 /**
- * Riwayat semua tamu (untuk panggil balik lewat kode tamu)
- * { [kodeTamu]: { guestJid, namaLengkap, tujuan, targetKeluargaNomor, namaPanggilanKeluarga } }
+ * Riwayat semua tamu yang pernah menghubungi, dikunci dengan "kode tamu"
+ * (mis. "#1David09072026"). Dipakai agar anggota keluarga bisa menghubungi
+ * balik tamu lama kapan saja — walau sudah melewati banyak sesi lain —
+ * cukup dengan mengirim kode tamunya ke bot.
+ * { [kodeTamu]: { guestJid, namaLengkap, tujuan, targetKeluargaNomor, dibuatPada } }
  */
 const riwayatTamu = {};
 
-/** Kode tamu harian (reset setiap hari) */
+// Nomor urut kode tamu — reset otomatis ke 0 setiap hari (lihat buatKodeTamu).
 const kodeTamuHarian = { tanggal: null, counter: 0 };
 
 /**
  * State "Chat keluar" menunggu nama tampilan:
- * { [familyJid]: { nomorInput } }
- * Diisi saat keluarga kirim "Chat <nomor>" dan bot menunggu nama tampilan.
+ * { [familyJid]: { nomorInput, jidTujuan } }
  */
 const stateChatKeluarMenungguNama = {};
 
+// Batas waktu keluarga menjawab permintaan konfirmasi sebelum otomatis
+// dianggap "sibuk" dan tamu diberi tahu tidak dapat dihubungi.
 const BATAS_WAKTU_KONFIRMASI_MS = 20 * 60 * 1000; // 20 menit
-const BATAS_WAKTU_BRIDGE_MS      = 10 * 60 * 1000; // 10 menit
 
-/** Timer tidak-aktif per sesi bridge */
+/** Timer tidak-aktif per sesi live chat: { [familyJid]: timeoutHandle } */
 const stateBridgeTimer = {};
 
-/** Buffer debounce pesan teks */
+// Batas waktu tidak ada aktivitas pesan selama sesi live chat sebelum sesi
+// otomatis diakhiri (berlaku untuk kedua arah: keluarga <-> lawan bicara).
+const BATAS_WAKTU_BRIDGE_MS = 10 * 60 * 1000; // 10 menit
+
+/** Buffer debounce: { [`${from}=>${to}`]: { timer, messages[] } | null } */
 const messageBuffer = {};
 
-// Guard
+// Referensi socket aktif (satu instance)
 let sock = null;
+
+// Guard pairing: mencegah requestPairingCode dipanggil lebih dari sekali
 let sudahMintaPairingCode = false;
+
+// Guard reconnect: mencegah loop ganda
 let sedangReconnect = false;
+
+// Apakah bot pernah berhasil terhubung penuh (connection: 'open')?
+// Dipakai untuk membedakan loggedOut-saat-pairing vs loggedOut-saat-operasional.
 let pernahTerhubung = false;
+
+// Hitung percobaan pairing gagal berturut-turut — dipakai untuk backoff
+// agar tidak membombardir server WA dengan requestPairingCode (bisa memicu
+// rate-limit sementara dari WhatsApp, yang tampak seperti "kode selalu salah").
 let percobaanPairingGagal = 0;
 
 // ============================================================
@@ -228,7 +240,7 @@ async function kirimPesan(jid, teks) {
   }
 }
 
-/** Jenis pesan media WA */
+/** Jenis-jenis pesan WA yang dianggap "media/fitur lain" (bukan teks biasa). */
 function apakahPesanMedia(msg) {
   return !!(
     msg?.imageMessage || msg?.videoMessage || msg?.audioMessage ||
@@ -239,12 +251,14 @@ function apakahPesanMedia(msg) {
   );
 }
 
+/** Label singkat jenis media, dipakai di log & sebagai fallback teks caption kosong. */
 function labelJenisMedia(msg) {
   if (msg?.stickerMessage)   return '[Stiker]';
   if (msg?.imageMessage)     return '[Gambar]';
   if (msg?.videoMessage)     return msg.videoMessage.gifPlayback ? '[GIF]' : '[Video]';
   if (msg?.audioMessage)     return msg.audioMessage.ptt ? '[Pesan Suara]' : '[Audio]';
   if (msg?.documentMessage || msg?.documentWithCaptionMessage) return '[Dokumen]';
+  if (msg?.stickerMessage)   return '[Stiker]';
   if (msg?.locationMessage || msg?.liveLocationMessage)        return '[Lokasi]';
   if (msg?.contactMessage || msg?.contactsArrayMessage)        return '[Kontak]';
   return '[Pesan]';
@@ -260,128 +274,23 @@ function ambilEkstensiDokumen(msg) {
   return dot >= 0 ? nama.slice(dot).toLowerCase() : '';
 }
 
-/** Teruskan pesan media (forward Baileys) */
+/**
+ * Teruskan pesan APA ADANYA (gambar, video, voice note, dokumen, stiker,
+ * lokasi, kontak, dll.) dari satu sesi live chat ke sisi lainnya, memakai
+ * fitur forward bawaan Baileys agar tidak perlu unduh+unggah ulang manual
+ * untuk tiap jenis media. Label pengirim dikirim sebagai pesan teks singkat
+ * terlebih dahulu (media hasil forward tidak bisa disisipi label langsung).
+ */
 async function teruskanPesanMedia(toJid, message, labelPengirim) {
   if (!sock) return;
   try {
     if (labelPengirim) {
       await kirimPesan(toJid, `${labelPengirim} ${labelJenisMedia(message.message)}`);
     }
-    await sock.copyNForward(toJid, message, true);
+    await sock.sendMessage(toJid, { forward: message });
   } catch (err) {
-    console.error(`[ERROR] Gagal teruskan media ke ${toJid}:`, err.message);
-    if (labelPengirim) {
-      await kirimPesan(toJid, `${labelPengirim} mengirim ${labelJenisMedia(message.message)} [tidak dapat diteruskan]`);
-    }
+    console.error(`[ERROR] Gagal meneruskan media ke ${toJid}:`, err.message);
   }
-}
-
-/** Buffer debounce — kumpulkan baris teks dan kirim sekaligus setelah 2,5 detik */
-function bufferDanKirimPesan(fromJid, toJid, teks, label) {
-  const kunci = `${fromJid}=>${toJid}`;
-  if (messageBuffer[kunci]) {
-    clearTimeout(messageBuffer[kunci].timer);
-    messageBuffer[kunci].messages.push(teks);
-  } else {
-    messageBuffer[kunci] = { timer: null, messages: [teks] };
-  }
-  messageBuffer[kunci].timer = setTimeout(async () => {
-    const buf = messageBuffer[kunci];
-    if (!buf) return;
-    messageBuffer[kunci] = null;
-    const gabung = buf.messages.join('\n');
-    await kirimPesan(toJid, `${label}\n${gabung}`);
-  }, 2500);
-}
-
-function batalkanBuffer(fromJid, toJid) {
-  const kunci = `${fromJid}=>${toJid}`;
-  if (messageBuffer[kunci]) {
-    clearTimeout(messageBuffer[kunci].timer);
-    messageBuffer[kunci] = null;
-  }
-}
-
-function pasangBridgeTimeout(familyJid) {
-  clearTimeout(stateBridgeTimer[familyJid]);
-  stateBridgeTimer[familyJid] = setTimeout(() => {
-    bridgeTimeout(familyJid).catch(err =>
-      console.error('[BRIDGE] Timeout error:', err.message)
-    );
-  }, BATAS_WAKTU_BRIDGE_MS);
-}
-
-// ── Decode JID ──────────────────────────────────────────────────────────────
-function nomorDariJid(jid) {
-  if (!jid) return null;
-  return jidDecode(jid)?.user || null;
-}
-
-function cariKeluargaByJid(jid, jidAlt) {
-  const nomorJid = nomorDariJid(jid);
-  const nomorAlt = nomorDariJid(jidAlt);
-  return DATABASE_KELUARGA.find(a => {
-    const nomorAnggota = nomorDariJid(a.nomor);
-    return nomorAnggota === nomorJid || (nomorAlt && nomorAnggota === nomorAlt);
-  }) || null;
-}
-
-function cariKeluarga(namaInput) {
-  const input = namaInput.trim().toLowerCase();
-  return DATABASE_KELUARGA.find(a =>
-    a.alternatifPanggilan.some(alias => alias.toLowerCase() === input) ||
-    a.panggilanUtama.toLowerCase() === input ||
-    a.namaResmi.toLowerCase() === input
-  ) || null;
-}
-
-function buatJidDariNomor(nomorInput) {
-  let digit = (nomorInput || '').replace(/[^0-9]/g, '');
-  if (!digit) return null;
-  if (digit.startsWith('0')) digit = '62' + digit.slice(1);
-  else if (!digit.startsWith('62')) digit = '62' + digit;
-  if (digit.length < 10 || digit.length > 15) return null;
-  return `${digit}@s.whatsapp.net`;
-}
-
-function buatKodeTamu(namaLengkap) {
-  const sekarang = new Date();
-  const dd = String(sekarang.getDate()).padStart(2, '0');
-  const mm = String(sekarang.getMonth() + 1).padStart(2, '0');
-  const yyyy = sekarang.getFullYear();
-  const tanggalHariIni = `${dd}${mm}${yyyy}`;
-
-  if (kodeTamuHarian.tanggal !== tanggalHariIni) {
-    kodeTamuHarian.tanggal = tanggalHariIni;
-    kodeTamuHarian.counter = 0;
-  }
-  kodeTamuHarian.counter += 1;
-
-  const hurufNama = namaLengkap.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 5);
-  return `#${kodeTamuHarian.counter}${hurufNama}${tanggalHariIni}`;
-}
-
-function formatSebutan(teks) {
-  return teks.trim().split(/\s+/)
-    .map(kata => kata.charAt(0).toUpperCase() + kata.slice(1).toLowerCase())
-    .join(' ');
-}
-
-function deteksiKurir(teks) {
-  const lower = teks.toLowerCase();
-  const kataKunciDitemukan = KATA_KUNCI_KURIR.filter(k => lower.includes(k));
-  if (kataKunciDitemukan.length < 3) return null;
-  const kurirDitemukan = DATABASE_KURIR.find(k => lower.includes(k));
-  if (!kurirDitemukan) return null;
-
-  const namaKurir = kurirDitemukan.toUpperCase();
-  const targetKeluarga = DATABASE_KELUARGA.find(a =>
-    a.alternatifPanggilan.some(alias => lower.includes(alias)) ||
-    lower.includes(a.panggilanUtama.toLowerCase()) ||
-    lower.includes(a.namaResmi.toLowerCase())
-  ) || null;
-
-  return { namaKurir, targetKeluarga };
 }
 
 async function kirimKontakVCard(tujuanJid, anggota) {
@@ -400,22 +309,107 @@ async function kirimKontakVCard(tujuanJid, anggota) {
   }
 }
 
+function cariKeluarga(namaInput) {
+  const input = namaInput.trim().toLowerCase();
+  return DATABASE_KELUARGA.find(a =>
+    a.alternatifPanggilan.some(alias => alias.toLowerCase() === input) ||
+    a.panggilanUtama.toLowerCase() === input ||
+    a.namaResmi.toLowerCase() === input
+  ) || null;
+}
+
+// ── Dukungan JID @lid (WhatsApp privacy addressing) ──────────────────────
+// WhatsApp kadang mengirim remoteJid sebagai `<id>@lid` (bukan nomor telepon
+// asli `<nomor>@s.whatsapp.net`) untuk kontak yang memakai mode privasi baru.
+// Saat itu terjadi, Baileys menyertakan `message.key.remoteJidAlt` berisi JID
+// nomor telepon aslinya. Tanpa penanganan ini, anggota keluarga yang chat
+// lewat @lid tidak akan terdeteksi sebagai keluarga (dianggap tamu asing,
+// malah ditanyai formulir skrining 3 langkah).
+function nomorDariJid(jid) {
+  if (!jid) return null;
+  return jidDecode(jid)?.user || null;
+}
+
+/** Cari data keluarga berdasarkan jid utama DAN jid alternatif (kasus @lid). */
+function cariKeluargaByJid(jid, jidAlt) {
+  const nomorJid = nomorDariJid(jid);
+  const nomorAlt = nomorDariJid(jidAlt);
+  return DATABASE_KELUARGA.find(a => {
+    const nomorAnggota = nomorDariJid(a.nomor);
+    return nomorAnggota === nomorJid || (nomorAlt && nomorAnggota === nomorAlt);
+  }) || null;
+}
+
+/**
+ * Buat kode tamu unik, format: #<nomorUrut><MAKS5HURUFNAMA><DDMMYYYY>
+ * Contoh: nama "David Susanto" pada 09-07-2026, urutan ke-1 → #1DAVID09072026
+ */
+function buatKodeTamu(namaLengkap) {
+  const sekarang = new Date();
+  const dd = String(sekarang.getDate()).padStart(2, '0');
+  const mm = String(sekarang.getMonth() + 1).padStart(2, '0');
+  const yyyy = sekarang.getFullYear();
+  const tanggalHariIni = `${dd}${mm}${yyyy}`;
+
+  if (kodeTamuHarian.tanggal !== tanggalHariIni) {
+    kodeTamuHarian.tanggal = tanggalHariIni;
+    kodeTamuHarian.counter = 0;
+  }
+  kodeTamuHarian.counter += 1;
+
+  const hurufNama = namaLengkap.replace(/[^A-Za-z]/g, '').toUpperCase().slice(0, 5);
+  return `#${kodeTamuHarian.counter}${hurufNama}${tanggalHariIni}`;
+}
+
+/** Ubah teks bebas jadi format "Title Case" untuk sebutan yang konsisten. */
+function formatSebutan(teks) {
+  return teks.trim().split(/\s+/)
+    .map(kata => kata.charAt(0).toUpperCase() + kata.slice(1).toLowerCase())
+    .join(' ');
+}
+
+/**
+ * Ubah input nomor bebas (mis. "08123456789", "+62 812-3456-789") menjadi
+ * JID WhatsApp yang valid. Nomor lokal berawalan "0" otomatis dikonversi ke
+ * kode negara "62" (Indonesia). Return null jika formatnya tidak masuk akal.
+ */
+function buatJidDariNomor(nomorInput) {
+  let digit = (nomorInput || '').replace(/[^0-9]/g, '');
+  if (!digit) return null;
+  if (digit.startsWith('0')) digit = '62' + digit.slice(1);
+  else if (!digit.startsWith('62')) digit = '62' + digit;
+  if (digit.length < 10 || digit.length > 15) return null;
+  return `${digit}@s.whatsapp.net`;
+}
+
+function deteksiKurir(teks) {
+  const lower = teks.toLowerCase();
+  const kataKunciDitemukan = KATA_KUNCI_KURIR.filter(k => lower.includes(k));
+  if (kataKunciDitemukan.length < 3) return null;
+  const kurirDitemukan = DATABASE_KURIR.find(k => lower.includes(k));
+  if (!kurirDitemukan) return null;
+  let targetKeluarga = null;
+  for (const anggota of DATABASE_KELUARGA) {
+    const semuaNama = [anggota.namaResmi, anggota.panggilanUtama, ...anggota.alternatifPanggilan];
+    if (semuaNama.some(n => lower.includes(n.toLowerCase()))) {
+      targetKeluarga = anggota;
+      break;
+    }
+  }
+  return { adalahKurir: true, namaKurir: kurirDitemukan.toUpperCase(), targetKeluarga };
+}
+
 // ============================================================
 // 7. GEMINI AI FUNCTIONS
 // ============================================================
 
 /**
- * Panggil Gemini dengan prompt sederhana (satu giliran, tanpa riwayat).
+ * Panggil Gemini dengan satu prompt (tanpa riwayat).
  * Return string atau null jika gagal/tidak diaktifkan.
  */
 async function tanyaGemini(prompt, systemInstruction) {
   if (!geminiEnabled || !geminiModel) return null;
   try {
-    const modelDenganSystem = systemInstruction
-      ? new (geminiModel.constructor)(geminiModel._apiKey, { ...geminiModel._generationConfig, systemInstruction })
-      : geminiModel;
-
-    // Gunakan API sederhana
     const result = await geminiModel.generateContent({
       contents: [{ role: 'user', parts: [{ text: prompt }] }],
       systemInstruction: systemInstruction ? { parts: [{ text: systemInstruction }] } : undefined,
@@ -429,17 +423,12 @@ async function tanyaGemini(prompt, systemInstruction) {
 
 /**
  * Chat multi-giliran dengan tamu menggunakan Gemini.
- * Mengelola riwayat percakapan per tamu.
- * Mengembalikan { teks: string, hubungiAlias: string|null, hubungiNamaKetik: string|null }
+ * Return { teks, hubungiAlias, hubungiNamaKetik } atau null jika gagal.
  */
 async function chatGeminiTamu(guestJid, pesanTamu) {
   if (!geminiEnabled || !geminiModel) return null;
-
   try {
-    if (!riwayatChatAI[guestJid]) {
-      riwayatChatAI[guestJid] = [];
-    }
-
+    if (!riwayatChatAI[guestJid]) riwayatChatAI[guestJid] = [];
     const riwayat = riwayatChatAI[guestJid];
     riwayat.push({ role: 'user', parts: [{ text: pesanTamu }] });
 
@@ -450,7 +439,6 @@ async function chatGeminiTamu(guestJid, pesanTamu) {
 
     const responMentah = result.response.text().trim();
 
-    // Cek marker [HUBUNGI:<alias>:<namaKetik>]
     const markerRegex = /\[HUBUNGI:([^\]:<>]+):([^\]:<>]+)\]/i;
     const markerMatch = responMentah.match(markerRegex);
 
@@ -459,19 +447,13 @@ async function chatGeminiTamu(guestJid, pesanTamu) {
     let teks = responMentah;
 
     if (markerMatch) {
-      hubungiAlias = markerMatch[1].trim().toLowerCase();
+      hubungiAlias    = markerMatch[1].trim().toLowerCase();
       hubungiNamaKetik = markerMatch[2].trim();
-      // Hapus marker dari teks yang dikirim ke tamu
       teks = responMentah.replace(markerRegex, '').trim();
     }
 
-    // Simpan respons ke riwayat
     riwayat.push({ role: 'model', parts: [{ text: responMentah }] });
-
-    // Batasi riwayat (jaga agar tidak terlalu panjang)
-    if (riwayat.length > 40) {
-      riwayatChatAI[guestJid] = riwayat.slice(-30);
-    }
+    if (riwayat.length > 40) riwayatChatAI[guestJid] = riwayat.slice(-30);
 
     return { teks, hubungiAlias, hubungiNamaKetik };
   } catch (err) {
@@ -480,40 +462,27 @@ async function chatGeminiTamu(guestJid, pesanTamu) {
   }
 }
 
-/**
- * Verifikasi apakah teks mengandung kata bermakna (Indonesia/Inggris).
- * Return true jika valid, false jika tidak bermakna (acak/spam).
- */
+/** Verifikasi apakah teks mengandung kata bermakna. Return true jika valid. */
 async function verifikasiTeksBermakna(teks) {
-  if (!geminiEnabled) return true; // jika AI nonaktif, anggap valid
-
+  if (!geminiEnabled) return true;
   if (!teks || teks.trim().length < 2) return false;
-
   try {
-    const prompt = `Teks: "${teks}"`;
-    const hasil = await tanyaGemini(prompt, SYSTEM_PROMPT_VERIFIKASI);
-    if (!hasil) return true; // jika gagal, anggap valid
+    const hasil = await tanyaGemini(`Teks: "${teks}"`, SYSTEM_PROMPT_VERIFIKASI);
+    if (!hasil) return true;
     return hasil.includes('VALID') && !hasil.includes('TIDAK_VALID');
   } catch (err) {
-    console.error('[GEMINI] Error verifikasi teks:', err.message);
-    return true; // jika error, anggap valid
+    return true;
   }
 }
 
-/**
- * Verifikasi apakah link aman.
- * Return true jika aman, false jika berbahaya.
- */
+/** Verifikasi apakah link aman. Return true jika aman. */
 async function verifikasiLink(url) {
   if (!geminiEnabled) return true;
-
   try {
-    const prompt = `URL untuk diverifikasi: ${url}`;
-    const hasil = await tanyaGemini(prompt, SYSTEM_PROMPT_VERIFIKASI_LINK);
+    const hasil = await tanyaGemini(`URL untuk diverifikasi: ${url}`, SYSTEM_PROMPT_VERIFIKASI_LINK);
     if (!hasil) return true;
     return hasil.includes('AMAN') && !hasil.includes('BERBAHAYA');
   } catch (err) {
-    console.error('[GEMINI] Error verifikasi link:', err.message);
     return true;
   }
 }
@@ -526,7 +495,6 @@ async function verifikasiFile(message) {
   const msg = message?.message;
   if (!msg) return { boleh: true, alasan: '' };
 
-  // Cek dokumen — verifikasi ekstensi
   if (msg.documentMessage || msg.documentWithCaptionMessage) {
     const ext = ambilEkstensiDokumen(msg);
     if (ext && EKSTENSI_DIBLOKIR.includes(ext)) {
@@ -538,40 +506,28 @@ async function verifikasiFile(message) {
     return { boleh: true, alasan: '' };
   }
 
-  // Gambar/video: verifikasi via Gemini Vision (jika tersedia)
+  // Gambar/video: cek caption untuk link berbahaya
   if (geminiEnabled && (msg.imageMessage || msg.videoMessage)) {
-    try {
-      // Cek caption untuk link berbahaya
-      const caption = msg.imageMessage?.caption || msg.videoMessage?.caption || '';
-      if (caption) {
-        const urlRegex = /https?:\/\/[^\s]+/gi;
-        const links = caption.match(urlRegex) || [];
-        for (const link of links) {
-          const aman = await verifikasiLink(link);
-          if (!aman) {
-            return { boleh: false, alasan: `Link dalam caption terdeteksi berbahaya: ${link}` };
-          }
+    const caption = msg.imageMessage?.caption || msg.videoMessage?.caption || '';
+    if (caption) {
+      const links = (caption.match(/https?:\/\/[^\s]+/gi) || []);
+      for (const link of links) {
+        if (!await verifikasiLink(link)) {
+          return { boleh: false, alasan: `Link dalam caption terdeteksi berbahaya: ${link}` };
         }
       }
-    } catch (err) {
-      console.error('[VERIFIKASI] Error verifikasi gambar:', err.message);
     }
   }
 
   return { boleh: true, alasan: '' };
 }
 
-/**
- * Deteksi dan verifikasi semua link dalam teks pesan.
- * Return { aman: boolean, linkBerbahaya: string }
- */
+/** Deteksi dan verifikasi semua link dalam teks. Return { aman, linkBerbahaya }. */
 async function cekLinkDalamTeks(teks) {
   if (!teks) return { aman: true, linkBerbahaya: '' };
-  const urlRegex = /https?:\/\/[^\s]+/gi;
-  const links = teks.match(urlRegex) || [];
+  const links = (teks.match(/https?:\/\/[^\s]+/gi) || []);
   for (const link of links) {
-    const aman = await verifikasiLink(link);
-    if (!aman) {
+    if (!await verifikasiLink(link)) {
       return { aman: false, linkBerbahaya: link };
     }
   }
@@ -579,24 +535,53 @@ async function cekLinkDalamTeks(teks) {
 }
 
 // ============================================================
-// 8. FUNGSI BRIDGE
+// 8. PEMBATALAN BUFFER DEBOUNCE
 // ============================================================
 
+function batalkanBuffer(jidA, jidB) {
+  for (const key of [`${jidA}=>${jidB}`, `${jidB}=>${jidA}`]) {
+    if (messageBuffer[key]) {
+      if (messageBuffer[key].timer) clearTimeout(messageBuffer[key].timer);
+      messageBuffer[key] = null;
+    }
+  }
+}
+
+// ============================================================
+// 9. LIVE CHAT BRIDGE, KONFIRMASI KELUARGA, & ANTREAN
+// ============================================================
+
+/**
+ * Nyalakan/reset timer tidak-aktif 10 menit untuk sesi live chat sebuah
+ * keluarga. Dipanggil setiap kali ada pesan yang berhasil diteruskan lewat
+ * bridge (dari kedua arah) supaya sesi hanya berakhir jika BENAR-BENAR tidak
+ * ada aktivitas, bukan sekadar durasi sesi yang panjang.
+ */
+function pasangBridgeTimeout(familyJid) {
+  clearTimeout(stateBridgeTimer[familyJid]);
+  stateBridgeTimer[familyJid] = setTimeout(() => {
+    bridgeTimeout(familyJid).catch(err =>
+      console.error('[BRIDGE] Gagal proses timeout tidak-aktif:', err.message)
+    );
+  }, BATAS_WAKTU_BRIDGE_MS);
+}
+
+/** Dipanggil otomatis jika sesi live chat tidak ada aktivitas selama 10 menit. */
 async function bridgeTimeout(familyJid) {
   const bridge = stateBridge[familyJid];
   if (!bridge || !bridge.active) return;
-  console.log(`[BRIDGE] Timeout 10 menit tanpa aktivitas — sesi diakhiri otomatis.`);
+  console.log(`[BRIDGE] Timeout 10 menit tanpa aktivitas untuk ${familyJid}, sesi diakhiri otomatis.`);
   await akhiriLiveChatBridge(familyJid, false, true);
 }
 
 async function mulaiLiveChatBridge(familyJid, tamuData, opts = {}) {
   const { guestJid, namaLengkap, namaPanggilanKeluarga } = tamuData;
-  const { kirimPesanKeGuest = true } = opts;
+  const { kirimPesanKeGuest = true, dimulaiOlehKeluarga = false } = opts;
   const keluarga = DATABASE_KELUARGA.find(a => a.nomor === familyJid);
   const panggilan = keluarga?.panggilanUtama || 'Anggota Keluarga';
   const panggilanUntukTamu = namaPanggilanKeluarga || panggilan;
 
-  stateBridge[familyJid] = { guestJid, active: true, namaPanggilanKeluarga: panggilanUntukTamu };
+  stateBridge[familyJid] = { guestJid, active: true, namaPanggilanKeluarga: panggilanUntukTamu, dimulaiOlehKeluarga };
   pasangBridgeTimeout(familyJid);
 
   await kirimPesan(familyJid,
@@ -610,6 +595,14 @@ async function mulaiLiveChatBridge(familyJid, tamuData, opts = {}) {
   console.log(`[BRIDGE] Aktif: ${namaLengkap} (${guestJid}) <-> ${panggilan} (${familyJid})`);
 }
 
+/**
+ * Tandai tamu sebagai "menunggu konfirmasi" keluarga (belum terhubung) dan
+ * nyalakan timer 20 menit — jika keluarga tidak membalas sama sekali,
+ * konfirmasiTimeout() akan otomatis memberi tahu tamu bahwa keluarga sedang
+ * sibuk, sama seperti keluarga membalas "Abaikan". Tidak mengirim pesan apa
+ * pun sendiri — pemanggil bertanggung jawab memanggil kirimPromptKonfirmasi()
+ * setelahnya agar keluarga selalu melihat daftar lengkap tamu yang menunggu.
+ */
 function pasangKonfirmasiPending(familyJid, tamuData) {
   const timer = setTimeout(() => {
     konfirmasiTimeout(familyJid).catch(err =>
@@ -620,6 +613,9 @@ function pasangKonfirmasiPending(familyJid, tamuData) {
   konfirmasiPending[familyJid] = { ...tamuData, timer };
 }
 
+/**
+ * Kirim pesan ke keluarga berisi tamu yang sedang menunggu konfirmasi.
+ */
 async function kirimPromptKonfirmasi(familyJid) {
   const pending = konfirmasiPending[familyJid];
   if (!pending) return;
@@ -630,7 +626,7 @@ async function kirimPromptKonfirmasi(familyJid) {
       ? `\n_"${pending.pesanPertama}"_`
       : '';
     await kirimPesan(familyJid,
-      `[TAMU MENUNGGU]\n\n*${pending.namaLengkap}* (${pending.kode})\n_${pending.tujuan}_${barisPesanPertama}\n\n` +
+      `[TAMU MENUNGGU]\n\n*${pending.namaLengkap}* (*${pending.kode}*)\n_${pending.tujuan}_${barisPesanPertama}\n\n` +
       `Apakah Anda bersedia membalas pesan tamu ini?\nKetik *Y* untuk menerima.\nKetik *N* untuk menolak.`
     );
   } else {
@@ -639,6 +635,7 @@ async function kirimPromptKonfirmasi(familyJid) {
   console.log(`[KONFIRMASI] Menunggu jawaban untuk ${pending.namaLengkap} (${pending.kode})`);
 }
 
+/** Kirim daftar SEMUA tamu (konfirmasi pending + antrean) beserta kode masing-masing. */
 async function kirimDaftarTungguKeKeluarga(familyJid) {
   const pending = konfirmasiPending[familyJid];
   const antrean = antreanTamu[familyJid] || [];
@@ -650,24 +647,25 @@ async function kirimDaftarTungguKeKeluarga(familyJid) {
       const barisPesanPertama = t.pesanPertama && t.pesanPertama.trim()
         ? `\n   _"${t.pesanPertama}"_`
         : '';
-      return `${i + 1}. *${t.kode}* -- ${t.namaLengkap}\n   _${t.tujuan}_${barisPesanPertama}`;
+      return `${i + 1}. *${t.kode}* — ${t.namaLengkap}\n   _${t.tujuan}_${barisPesanPertama}`;
     })
     .join('\n\n');
 
   await kirimPesan(familyJid,
     `[${semua.length} TAMU MENUNGGU BALASAN]\n\n${daftar}\n\n` +
-    `Ketik *kode* tamu untuk membalas (mis. *${semua[0].kode}*).\n` +
+    `Ketik *kode* tamu untuk membalas tamu tersebut (mis. *${semua[0].kode}*).\n` +
     `Atau ketik *Y* untuk menerima tamu pertama, *N* untuk menolak tamu pertama.`
   );
 }
 
+/** Dipanggil otomatis jika keluarga tidak membalas konfirmasi dalam 20 menit. */
 async function konfirmasiTimeout(familyJid) {
   while (bridgeLock[familyJid]) await delay(50);
   bridgeLock[familyJid] = true;
   let harusLanjutAntrean = false;
   try {
     const pending = konfirmasiPending[familyJid];
-    if (!pending) return;
+    if (!pending) return; // sudah dijawab (YA/Abaikan) sebelum timer berbunyi
 
     konfirmasiPending[familyJid] = null;
     harusLanjutAntrean = true;
@@ -675,30 +673,30 @@ async function konfirmasiTimeout(familyJid) {
     const keluarga = DATABASE_KELUARGA.find(a => a.nomor === familyJid);
     const panggilan = keluarga?.panggilanUtama || 'Anggota Keluarga';
 
+    console.log(`[KONFIRMASI] Timeout 20 menit tanpa balasan dari ${panggilan} untuk ${pending.namaLengkap} (${pending.kode})`);
     await kirimPesan(pending.guestJid,
       `ⓘ Mohon maaf, *${pending.namaPanggilanKeluarga || panggilan}* sedang sibuk dan belum dapat dihubungi saat ini. Terima kasih.`
     );
     await kirimPesan(familyJid,
-      `⌛︎ Waktu konfirmasi (20 menit) habis. Permintaan tamu *${pending.namaLengkap}* (${pending.kode}) otomatis dianggap ditolak.`
+      `⌛︎ Waktu konfirmasi (20 menit) habis. Permintaan tamu *${pending.namaLengkap}* (*${pending.kode}*) otomatis dianggap ditolak.`
     );
-
-    // Kembalikan tamu ke mode AI chat
-    if (stateScreening[pending.guestJid]) {
-      stateScreening[pending.guestJid] = { step: 0, pesanPertama: '' };
-    }
+    delete stateScreening[pending.guestJid];
   } finally {
     bridgeLock[familyJid] = false;
   }
   if (harusLanjutAntrean) await mintaKonfirmasiBerikutnya(familyJid);
 }
 
+/**
+ * Keluarga memilih membalas tamu tertentu yang SEDANG menunggu (baik yang
+ * lagi ditanya konfirmasi maupun yang masih di antrean) lewat kode tamunya.
+ */
 async function pilihTamuDariAntreanByKode(familyJid, kodeInput) {
   while (bridgeLock[familyJid]) await delay(50);
   bridgeLock[familyJid] = true;
   try {
     const pending = konfirmasiPending[familyJid];
     if (pending && pending.kode === kodeInput) {
-      // Tamu yang sedang dikonfirmasi
       clearTimeout(pending.timer);
       konfirmasiPending[familyJid] = null;
       await mulaiLiveChatBridge(familyJid, pending);
@@ -707,64 +705,180 @@ async function pilihTamuDariAntreanByKode(familyJid, kodeInput) {
 
     const antrean = antreanTamu[familyJid] || [];
     const idx = antrean.findIndex(t => t.kode === kodeInput);
-    if (idx < 0) return false;
+    if (idx === -1) return false;
 
-    const tamu = antrean.splice(idx, 1)[0];
-
-    // Kalau ada tamu lain yang sedang ditanya konfirmasi, jangan dibiarkan hilang
-    if (konfirmasiPending[familyJid]) {
-      antrean.unshift(konfirmasiPending[familyJid]);
-      clearTimeout(konfirmasiPending[familyJid].timer);
+    const [dipilih] = antrean.splice(idx, 1);
+    if (pending) {
+      clearTimeout(pending.timer);
       konfirmasiPending[familyJid] = null;
+      antrean.unshift(pending);
     }
-
-    await mulaiLiveChatBridge(familyJid, tamu);
-
-    for (let i = 0; i < antrean.length; i++) {
-      await kirimPesan(antrean[i].guestJid, `ⓘ Update antrean: posisi Anda sekarang *#${i + 1}*.`);
-    }
+    await mulaiLiveChatBridge(familyJid, dipilih);
     return true;
   } finally {
     bridgeLock[familyJid] = false;
   }
 }
 
+/**
+ * Batalkan permintaan tamu yang MASIH menunggu (belum tersambung).
+ * Return true jika permintaan ditemukan & dibatalkan.
+ */
 async function batalkanTamuMenunggu(guestJid) {
-  // Cek di konfirmasi pending
-  for (const [familyJid, pending] of Object.entries(konfirmasiPending)) {
+  let familyJid = Object.keys(konfirmasiPending)
+    .find(f => konfirmasiPending[f]?.guestJid === guestJid);
+  if (!familyJid) {
+    familyJid = Object.keys(antreanTamu)
+      .find(f => (antreanTamu[f] || []).some(t => t.guestJid === guestJid));
+  }
+  if (!familyJid) return false;
+
+  while (bridgeLock[familyJid]) await delay(50);
+  bridgeLock[familyJid] = true;
+  let hapusDariPending = false;
+  let ditemukan = false;
+  let namaTamu = 'Tamu';
+  try {
+    const pending = konfirmasiPending[familyJid];
     if (pending && pending.guestJid === guestJid) {
-      while (bridgeLock[familyJid]) await delay(50);
-      bridgeLock[familyJid] = true;
-      try {
-        clearTimeout(pending.timer);
-        konfirmasiPending[familyJid] = null;
-        const namaTamu = pending.namaLengkap;
-        await kirimPesan(familyJid, `ⓘ Permintaan dari tamu *${namaTamu}* telah dibatalkan oleh tamu tersebut.`);
-      } finally {
-        bridgeLock[familyJid] = false;
+      clearTimeout(pending.timer);
+      konfirmasiPending[familyJid] = null;
+      hapusDariPending = true;
+      ditemukan = true;
+      namaTamu = pending.namaLengkap;
+    } else {
+      const antrean = antreanTamu[familyJid] || [];
+      const idx = antrean.findIndex(t => t.guestJid === guestJid);
+      if (idx !== -1) {
+        namaTamu = antrean[idx].namaLengkap;
+        antrean.splice(idx, 1);
+        ditemukan = true;
       }
-      await mintaKonfirmasiBerikutnya(familyJid);
-      return true;
     }
-  }
-  // Cek di antrean
-  for (const [familyJid, antrean] of Object.entries(antreanTamu)) {
-    if (!antrean) continue;
-    const idx = antrean.findIndex(t => t.guestJid === guestJid);
-    if (idx >= 0) {
-      const tamu = antrean.splice(idx, 1)[0];
-      const keluarga = DATABASE_KELUARGA.find(a => a.nomor === familyJid);
-      const panggilan = keluarga?.panggilanUtama || 'Anggota Keluarga';
-      await kirimPesan(familyJid, `ⓘ Permintaan dari tamu *${tamu.namaLengkap}* telah dibatalkan.`);
-      for (let i = 0; i < antrean.length; i++) {
-        await kirimPesan(antrean[i].guestJid, `ⓘ Update antrean: posisi Anda sekarang *#${i + 1}*.`);
-      }
-      return true;
+    if (ditemukan) {
+      await kirimPesan(familyJid, `ⓘ Permintaan dari tamu *${namaTamu}* telah dibatalkan oleh tamu tersebut.`);
     }
+  } finally {
+    bridgeLock[familyJid] = false;
   }
-  return false;
+  if (hapusDariPending) await mintaKonfirmasiBerikutnya(familyJid);
+  return ditemukan;
 }
 
+/**
+ * Keluarga menghubungi kontak BARU (bukan tamu yang mengisi formulir) lewat
+ * perintah "Chat <nomor>". Bot menanya nama tampilan dulu, lalu membuka bridge.
+ */
+async function tanganiPermintaanChatKeluar(familyJid, keluarga, nomorInput) {
+  while (bridgeLock[familyJid]) await delay(50);
+  bridgeLock[familyJid] = true;
+  try {
+    const bridgeAktif    = stateBridge[familyJid];
+    const konfirmasiAktif = konfirmasiPending[familyJid];
+    if ((bridgeAktif && bridgeAktif.active) || konfirmasiAktif) {
+      await kirimPesan(familyJid,
+        `ⓘ Mohon selesaikan dulu sesi/konfirmasi yang sedang berjalan sebelum memulai percakapan baru.`
+      );
+      return;
+    }
+
+    const jidTujuan = buatJidDariNomor(nomorInput);
+    if (!jidTujuan) {
+      await kirimPesan(familyJid, `ⓘ Format nomor "*${nomorInput.trim()}*" tidak valid. Contoh: *Chat 08123456789*`);
+      return;
+    }
+    if (jidTujuan === familyJid) {
+      await kirimPesan(familyJid, `ⓘ Anda tidak dapat menghubungi nomor Anda sendiri.`);
+      return;
+    }
+    if (DATABASE_KELUARGA.some(a => a.nomor === jidTujuan)) {
+      await kirimPesan(familyJid, `ⓘ Nomor ini terdaftar sebagai anggota keluarga — silakan hubungi langsung lewat WhatsApp.`);
+      return;
+    }
+
+    // Simpan nomor sementara, tunggu nama tampilan dari keluarga
+    stateChatKeluarMenungguNama[familyJid] = { nomorInput: nomorInput.trim(), jidTujuan };
+    const nomorTampil = '+' + jidTujuan.replace('@s.whatsapp.net', '');
+    await kirimPesan(familyJid,
+      `Nama apa yang ingin ditampilkan kepada kontak *${nomorTampil}*?\n` +
+      `(Nama ini yang akan muncul saat Anda berkomunikasi dengan mereka)`
+    );
+  } finally {
+    bridgeLock[familyJid] = false;
+  }
+}
+
+/** Lanjutkan koneksi chat keluar setelah keluarga memberikan nama tampilan. */
+async function mulaiChatKeluar(familyJid, keluarga, jidTujuan, namaTampil) {
+  while (bridgeLock[familyJid]) await delay(50);
+  bridgeLock[familyJid] = true;
+  try {
+    const nomorTampil = '+' + jidTujuan.replace('@s.whatsapp.net', '');
+    await kirimPesan(familyJid, `⌛︎ Menghubungkan Anda ke *${nomorTampil}*, mohon menunggu sebentar.`);
+
+    await kirimPesan(jidTujuan,
+      `Halo! Saya ${NAMA_BOT}, sistem komunikasi privat ${NAMA_KELUARGA}. Anda menerima pesan ini karena ` +
+      `salah satu anggota keluarga ${NAMA_KELUARGA} ingin menghubungi Anda.\n\n` +
+      `ⓘ Mohon menunggu, saya sedang menghubungkan anggota keluarga tersebut ke saluran komunikasi Anda.`
+    );
+    await delay(1500);
+    await kirimPesan(jidTujuan, `ⓘ Anda telah terhubung. Silakan mulai percakapan.`);
+
+    await mulaiLiveChatBridge(
+      familyJid,
+      { guestJid: jidTujuan, namaLengkap: nomorTampil, tujuan: 'Dihubungi langsung oleh keluarga', namaPanggilanKeluarga: namaTampil },
+      { kirimPesanKeGuest: false, dimulaiOlehKeluarga: true }
+    );
+    console.log(`[CHAT-KELUAR] ${namaTampil} (${familyJid}) menghubungi ${jidTujuan}`);
+  } finally {
+    bridgeLock[familyJid] = false;
+  }
+}
+
+/**
+ * Keluarga menghubungi balik tamu lama memakai kode tamu.
+ */
+async function tanganiPanggilBalik(familyJid, kodeInput, keluarga) {
+  while (bridgeLock[familyJid]) await delay(50);
+  bridgeLock[familyJid] = true;
+  try {
+    const bridgeAktif    = stateBridge[familyJid];
+    const konfirmasiAktif = konfirmasiPending[familyJid];
+    if ((bridgeAktif && bridgeAktif.active) || konfirmasiAktif) {
+      await kirimPesan(familyJid,
+        `ⓘ Selesaikan dulu sesi/konfirmasi yang sedang berjalan sebelum menghubungi tamu lain.`
+      );
+      return;
+    }
+
+    const record = riwayatTamu[kodeInput];
+    if (!record) {
+      await kirimPesan(familyJid, `ⓘ Kode tamu "*${kodeInput}*" tidak ditemukan.`);
+      return;
+    }
+    if (record.targetKeluargaNomor !== familyJid) {
+      await kirimPesan(familyJid, `ⓘ Kode tamu ini bukan milik Anda.`);
+      return;
+    }
+
+    await kirimPesan(record.guestJid,
+      `ⓘ *${keluarga.panggilanUtama}* menghubungi Anda kembali mengenai:\n_${record.tujuan}_`
+    );
+    await mulaiLiveChatBridge(familyJid, {
+      guestJid: record.guestJid,
+      namaLengkap: record.namaLengkap,
+      tujuan: record.tujuan,
+      namaPanggilanKeluarga: record.namaPanggilanKeluarga,
+    });
+  } finally {
+    bridgeLock[familyJid] = false;
+  }
+}
+
+/**
+ * @param diabaikan     true jika keluarga sengaja memutus & menolak (ketik "N").
+ * @param karenaTimeout true jika sesi berakhir otomatis karena 10 menit tanpa aktivitas.
+ */
 async function akhiriLiveChatBridge(familyJid, diabaikan = false, karenaTimeout = false) {
   const bridge = stateBridge[familyJid];
   if (!bridge || !bridge.active) return;
@@ -780,10 +894,16 @@ async function akhiriLiveChatBridge(familyJid, diabaikan = false, karenaTimeout 
   batalkanBuffer(familyJid, guestJid);
 
   if (karenaTimeout) {
-    await kirimPesan(guestJid, `ⓘ Sesi percakapan diakhiri otomatis karena tidak ada aktivitas selama 10 menit. Terima kasih.`);
-    await kirimPesan(familyJid, `⌛︎ Sesi live chat diakhiri otomatis karena tidak ada aktivitas selama 10 menit.`);
+    await kirimPesan(guestJid,
+      `ⓘ Sesi percakapan diakhiri otomatis karena tidak ada aktivitas selama 10 menit. Terima kasih.`
+    );
+    await kirimPesan(familyJid,
+      `⌛︎ Sesi live chat diakhiri otomatis karena tidak ada aktivitas selama 10 menit.`
+    );
   } else if (diabaikan) {
-    await kirimPesan(guestJid, `ⓘ Mohon maaf, *${panggilanUntukLawanBicara}* tidak dapat melanjutkan percakapan saat ini. Terima kasih.`);
+    await kirimPesan(guestJid,
+      `ⓘ Mohon maaf, *${panggilanUntukLawanBicara}* tidak dapat melanjutkan percakapan saat ini. Terima kasih.`
+    );
     await kirimPesan(familyJid, `✓ Sesi telah diputuskan.`);
   } else {
     await kirimPesan(guestJid, `ⓘ Sesi percakapan telah berakhir. Terima kasih.`);
@@ -791,19 +911,14 @@ async function akhiriLiveChatBridge(familyJid, diabaikan = false, karenaTimeout 
   }
 
   console.log(`[BRIDGE] Berakhir: ${guestJid} <-> ${familyJid}${diabaikan ? ' (diabaikan)' : ''}${karenaTimeout ? ' (timeout)' : ''}`);
-
-  // Kembalikan tamu ke mode AI chat (bukan hapus state sepenuhnya)
-  if (stateScreening[guestJid]) {
-    delete stateScreening[guestJid];
-    if (geminiEnabled) {
-      // Bersihkan riwayat percakapan AI agar sesi baru bersih
-      delete riwayatChatAI[guestJid];
-    }
-  }
-
+  delete stateScreening[guestJid];
+  delete riwayatChatAI[guestJid];
   await mintaKonfirmasiBerikutnya(familyJid);
 }
 
+/**
+ * Ambil tamu antrean berikutnya (jika ada) dan kirim permintaan konfirmasi ke keluarga.
+ */
 async function mintaKonfirmasiBerikutnya(familyJid) {
   while (bridgeLock[familyJid]) await delay(50);
   bridgeLock[familyJid] = true;
@@ -825,14 +940,17 @@ async function mintaKonfirmasiBerikutnya(familyJid) {
   }
 }
 
+/**
+ * Masukkan tamu ke alur konfirmasi (jika keluarga sedang luang) atau ke antrean.
+ */
 async function mintaKonfirmasiAtauAntre(familyJid, tamuData) {
   while (bridgeLock[familyJid]) await delay(50);
   bridgeLock[familyJid] = true;
 
   try {
-    const bridgeAktif = stateBridge[familyJid];
+    const bridgeAktif    = stateBridge[familyJid];
     const konfirmasiAktif = konfirmasiPending[familyJid];
-    const adaAntrean = antreanTamu[familyJid] && antreanTamu[familyJid].length > 0;
+    const adaAntrean      = antreanTamu[familyJid] && antreanTamu[familyJid].length > 0;
 
     if ((!bridgeAktif || !bridgeAktif.active) && !konfirmasiAktif && !adaAntrean) {
       pasangKonfirmasiPending(familyJid, tamuData);
@@ -852,7 +970,7 @@ async function mintaKonfirmasiAtauAntre(familyJid, tamuData) {
         await kirimDaftarTungguKeKeluarga(familyJid);
       } else {
         await kirimPesan(familyJid,
-          `[INFO ANTREAN]\nTamu baru *${tamuData.namaLengkap}* (${tamuData.kode}) menunggu di antrean #${posisi}.\nKeperluan: _${tamuData.tujuan}_`
+          `[INFO ANTREAN]\nTamu baru *${tamuData.namaLengkap}* (*${tamuData.kode}*) menunggu di antrean #${posisi}.\nKeperluan: _${tamuData.tujuan}_`
         );
       }
       console.log(`[ANTREAN] ${tamuData.namaLengkap} (${tamuData.kode}) di antrean #${posisi} untuk ${familyJid}`);
@@ -863,63 +981,77 @@ async function mintaKonfirmasiAtauAntre(familyJid, tamuData) {
 }
 
 // ============================================================
-// 9. FUNGSI SKRINING TAMU
+// 10. MESSAGE BUFFER (DEBOUNCE ANTI-SPAM 2.5 DETIK)
+// ============================================================
+
+function bufferDanKirimPesan(fromJid, toJid, teks, labelPengirim) {
+  const key = `${fromJid}=>${toJid}`;
+  if (!messageBuffer[key]) messageBuffer[key] = { timer: null, messages: [] };
+  messageBuffer[key].messages.push(teks);
+
+  if (messageBuffer[key].timer) clearTimeout(messageBuffer[key].timer);
+
+  messageBuffer[key].timer = setTimeout(async () => {
+    const entry = messageBuffer[key];
+    messageBuffer[key] = null;
+    if (!entry || entry.messages.length === 0) return;
+    const gabungan = entry.messages.join('\n');
+    const pesanAkhir = labelPengirim ? `${labelPengirim}\n${gabungan}` : gabungan;
+    await kirimPesan(toJid, pesanAkhir);
+  }, 2500);
+}
+
+// ============================================================
+// 11. FORMULIR SKRINING & AI CHAT
 // ============================================================
 
 /**
  * Mulai interaksi dengan tamu baru.
- * Jika Gemini aktif: tamu langsung masuk mode AI chat.
+ * Jika Gemini aktif: tamu langsung masuk mode AI chat (step 0).
  * Jika Gemini nonaktif: mulai skrining 3 langkah biasa.
  */
 async function mulaiInteraksiTamu(guestJid, teks) {
   if (geminiEnabled) {
-    // Mode AI: simpan pesan pertama, set state AI chat
     stateScreening[guestJid] = { step: 0, pesanPertama: teks };
     console.log(`[AI] Tamu baru (mode AI): ${guestJid}`);
-
     const hasil = await chatGeminiTamu(guestJid, teks);
     if (!hasil) {
-      // Fallback jika Gemini gagal
-      await mulaiSkriningBiasa(guestJid, teks);
+      await mulaiSkrining(guestJid, teks);
       return;
     }
-
     await kirimPesan(guestJid, hasil.teks);
-
-    // Cek apakah Gemini mendeteksi niat hubungi keluarga
     if (hasil.hubungiAlias) {
       await prosesNiatHubungiKeluarga(guestJid, hasil.hubungiAlias, hasil.hubungiNamaKetik, teks);
     }
   } else {
-    await mulaiSkriningBiasa(guestJid, teks);
+    await mulaiSkrining(guestJid, teks);
   }
 }
 
 /**
  * Skrining 3 langkah biasa (tanpa AI).
  */
-async function mulaiSkriningBiasa(guestJid, teks) {
-  stateScreening[guestJid] = { step: 1, pesanPertama: teks };
+async function mulaiSkrining(guestJid, pesanPertama) {
+  stateScreening[guestJid] = { step: 1, pesanPertama };
   await kirimPesan(guestJid,
-    `Selamat datang!\n\nAnda menghubungi sistem komunikasi privat ${NAMA_KELUARGA}.\nMohon jawab beberapa pertanyaan singkat.\n\n` +
+    `Selamat datang!\n\nAnda menghubungi sistem komunikasi privat ${NAMA_KELUARGA}.\n` +
+    `Mohon jawab beberapa pertanyaan singkat.\n` +
+    `_Ketik *Batal* kapan saja untuk membatalkan percakapan ini._\n\n` +
     `*Pertanyaan 1 dari 3:*\nSiapa *Nama Lengkap* Anda?`
   );
 }
 
 /**
  * Proses ketika Gemini mendeteksi tamu ingin menghubungi anggota keluarga.
- * Transisi ke skrining langkah 1 (dengan target keluarga sudah diketahui).
  */
 async function prosesNiatHubungiKeluarga(guestJid, alias, namaKetik, pesanPertama) {
   const keluarga = cariKeluarga(alias);
   if (!keluarga) {
-    // Nama tidak ditemukan di database
     await kirimPesan(guestJid, `ⓘ Maaf, tidak ada anggota keluarga dengan nama tersebut yang terdaftar.`);
     return;
   }
 
   const namaTampil = formatSebutan(namaKetik || alias);
-
   stateScreening[guestJid] = {
     step: 1,
     targetKeluarga: keluarga,
@@ -933,21 +1065,24 @@ async function prosesNiatHubungiKeluarga(guestJid, alias, namaKetik, pesanPertam
   );
 }
 
-/**
- * Proses jawaban skrining tamu (langkah 1, 2, 3).
- */
 async function prosesJawabanSkrining(guestJid, teks) {
   const state = stateScreening[guestJid];
+  if (!state) return;
+
   const teksTrim = teks.trim();
   const teksLower = teksTrim.toLowerCase();
 
-  // Batal kapan saja
+  // ── Batal kapan saja ──
   if (teksLower === 'batal') {
     const berhasil = await batalkanTamuMenunggu(guestJid);
     if (berhasil) {
-      stateScreening[guestJid] = { step: 0, pesanPertama: '' };
-      delete riwayatChatAI[guestJid];
-      await kirimPesan(guestJid, `ⓘ Permintaan Anda telah dibatalkan.`);
+      if (geminiEnabled) {
+        stateScreening[guestJid] = { step: 0, pesanPertama: '' };
+        delete riwayatChatAI[guestJid];
+      } else {
+        delete stateScreening[guestJid];
+      }
+      await kirimPesan(guestJid, `ⓘ Permintaan Anda telah dibatalkan.\nKirim pesan apa saja jika ingin memulai lagi.`);
     } else {
       await kirimPesan(guestJid, `ⓘ Permintaan sedang diproses dan tidak dapat dibatalkan lagi.`);
     }
@@ -957,18 +1092,16 @@ async function prosesJawabanSkrining(guestJid, teks) {
   // ── STEP 0: Mode AI chat ──
   if (state.step === 0) {
     if (!geminiEnabled) {
-      await mulaiSkriningBiasa(guestJid, teksTrim);
+      await mulaiSkrining(guestJid, teksTrim);
       return;
     }
 
-    // Verifikasi teks (cegah spam/random)
     const valid = await verifikasiTeksBermakna(teksTrim);
     if (!valid) {
       await kirimPesan(guestJid, `ⓘ Mohon ketik pesan yang bermakna dalam bahasa Indonesia atau Inggris.`);
       return;
     }
 
-    // Cek link dalam pesan
     const cekLink = await cekLinkDalamTeks(teksTrim);
     if (!cekLink.aman) {
       await kirimPesan(guestJid, `ⓘ Link yang Anda kirim tidak dapat diteruskan karena terdeteksi berpotensi berbahaya.`);
@@ -996,30 +1129,25 @@ async function prosesJawabanSkrining(guestJid, teks) {
       await kirimPesan(guestJid, `ⓘ Mohon masukkan nama lengkap Anda (minimal 2 karakter).`);
       return;
     }
-
-    // Verifikasi nama mengandung kata bermakna
     const valid = await verifikasiTeksBermakna(teksTrim);
     if (!valid) {
       await kirimPesan(guestJid, `ⓘ Mohon masukkan nama lengkap Anda yang sebenarnya.`);
       return;
     }
-
-    const namaFormatted = formatSebutan(teksTrim);
-    state.namaLengkap = namaFormatted;
+    state.namaLengkap = formatSebutan(teksTrim);
 
     if (state.targetKeluarga) {
-      // Target keluarga sudah diketahui dari AI — lewati step 2, langsung step 3
+      // Target keluarga sudah diketahui dari AI — lewati step 2
       state.step = 3;
       const namaTampil = state.namaPanggilanKeluarga || state.targetKeluarga.panggilanUtama;
       await kirimPesan(guestJid,
-        `Terima kasih, *${namaFormatted}*.\n\n*Pertanyaan 2:*\nApa keperluan Anda dengan *${namaTampil}*?`
+        `Terima kasih, *${state.namaLengkap}*.\n\n*Pertanyaan 2:*\nApa keperluan Anda dengan *${namaTampil}*?`
       );
     } else {
-      // Belum tahu target keluarga — tanya step 2
       state.step = 2;
       const daftar = DATABASE_KELUARGA.map(a => `- ${a.panggilanUtama}`).join('\n');
       await kirimPesan(guestJid,
-        `Terima kasih, *${namaFormatted}*.\n\n*Pertanyaan 2 dari 3:*\nSiapa yang ingin Anda hubungi?\n\n${daftar}`
+        `Terima kasih, *${state.namaLengkap}*.\n\n*Pertanyaan 2 dari 3:*\nSiapa yang ingin Anda hubungi?\n\n${daftar}`
       );
     }
     return;
@@ -1027,34 +1155,30 @@ async function prosesJawabanSkrining(guestJid, teks) {
 
   // ── STEP 2: Siapa yang ingin ditemui ──
   if (state.step === 2) {
-    const keluarga = cariKeluarga(teksTrim);
-    if (!keluarga) {
-      const daftar = DATABASE_KELUARGA.map(a => `- ${a.panggilanUtama}`).join('\n');
+    const keluargaDitemukan = cariKeluarga(teksTrim);
+    if (!keluargaDitemukan) {
+      const daftar = DATABASE_KELUARGA.map(a => a.panggilanUtama).join(', ');
       await kirimPesan(guestJid,
-        `ⓘ Maaf, tidak ditemukan anggota keluarga dengan nama "${teksTrim}".\nSilakan pilih dari daftar berikut:\n\n${daftar}`
+        `ⓘ Nama "*${teksTrim}*" tidak ditemukan.\nSilakan ketik ulang.\n_Contoh: ${daftar}_`
       );
       return;
     }
-
-    state.targetKeluarga = keluarga;
-    // Simpan nama panggilan seperti yang diketik tamu (bukan nama resmi)
+    state.targetKeluarga = keluargaDitemukan;
     state.namaPanggilanKeluarga = formatSebutan(teksTrim);
     state.step = 3;
-
     await kirimPesan(guestJid,
-      `*Pertanyaan 3 dari 3:*\nApa keperluan Anda dengan *${state.namaPanggilanKeluarga}*?`
+      `*Pertanyaan 3 dari 3:*\nApa *Tujuan/Kepentingan* Anda menghubungi *${state.namaPanggilanKeluarga}*?\n_(Jelaskan dalam minimal 5 kata)_`
     );
     return;
   }
 
   // ── STEP 3: Keperluan ──
   if (state.step === 3) {
-    if (teksTrim.length < 3) {
+    const jumlahKata = teksTrim.split(/\s+/).filter(Boolean).length;
+    if (jumlahKata < 2) {
       await kirimPesan(guestJid, `ⓘ Mohon jelaskan keperluan Anda dengan lebih lengkap.`);
       return;
     }
-
-    // Verifikasi keperluan mengandung kata bermakna
     const valid = await verifikasiTeksBermakna(teksTrim);
     if (!valid) {
       await kirimPesan(guestJid, `ⓘ Mohon jelaskan keperluan Anda dengan kata-kata yang jelas.`);
@@ -1062,148 +1186,41 @@ async function prosesJawabanSkrining(guestJid, teks) {
     }
 
     state.tujuan = teksTrim;
-    state.step = 'selesai';
+    state.step   = 'selesai';
+    const keluarga = state.targetKeluarga;
 
-    const kode = buatKodeTamu(state.namaLengkap);
+    state.kodeTamu = buatKodeTamu(state.namaLengkap);
     const tamuData = {
       guestJid,
       namaLengkap: state.namaLengkap,
       tujuan: state.tujuan,
+      kode: state.kodeTamu,
       namaPanggilanKeluarga: state.namaPanggilanKeluarga,
-      kode,
-      pesanPertama: state.pesanPertama || '',
+      pesanPertama: state.pesanPertama,
     };
 
-    // Simpan ke riwayat
-    riwayatTamu[kode] = {
+    riwayatTamu[state.kodeTamu] = {
       guestJid,
       namaLengkap: state.namaLengkap,
       tujuan: state.tujuan,
-      targetKeluargaNomor: state.targetKeluarga.nomor,
+      targetKeluargaNomor: keluarga.nomor,
       namaPanggilanKeluarga: state.namaPanggilanKeluarga,
+      pesanPertama: state.pesanPertama,
+      dibuatPada: new Date(),
     };
 
     await kirimPesan(guestJid,
       `ⓘ Terima kasih, *${state.namaLengkap}*. Permintaan Anda telah kami catat.\n` +
       `Mohon tunggu, kami sedang menghubungi *${state.namaPanggilanKeluarga}*.\n\n` +
-      `_Ketik *Batal* untuk membatalkan permintaan Anda._`
+      `_Ketik *Batal* kapan saja sebelum terhubung jika ingin membatalkan permintaan ini._`
     );
-
-    await mintaKonfirmasiAtauAntre(state.targetKeluarga.nomor, tamuData);
-    return;
+    await delay(1000);
+    await mintaKonfirmasiAtauAntre(keluarga.nomor, tamuData);
   }
 }
 
 // ============================================================
-// 10. FUNGSI KELUARGA
-// ============================================================
-
-/**
- * Keluarga ingin menghubungi nomor baru via "Chat <nomor>".
- * Sekarang meminta nama tampilan terlebih dahulu.
- */
-async function tanganiPermintaanChatKeluar(familyJid, keluarga, nomorInput) {
-  while (bridgeLock[familyJid]) await delay(50);
-  bridgeLock[familyJid] = true;
-  try {
-    const bridgeAktif = stateBridge[familyJid];
-    const konfirmasiAktif = konfirmasiPending[familyJid];
-    if ((bridgeAktif && bridgeAktif.active) || konfirmasiAktif) {
-      await kirimPesan(familyJid, `ⓘ Selesaikan dulu sesi yang sedang berjalan sebelum menghubungi kontak baru.`);
-      return;
-    }
-
-    const jidTujuan = buatJidDariNomor(nomorInput);
-    if (!jidTujuan) {
-      await kirimPesan(familyJid, `ⓘ Format nomor tidak valid. Contoh: Chat 08123456789`);
-      return;
-    }
-
-    if (jidTujuan === keluarga.nomor || jidTujuan === `${NOMOR_BOT}@s.whatsapp.net`) {
-      await kirimPesan(familyJid, `ⓘ Tidak bisa menghubungi nomor sendiri atau nomor bot.`);
-      return;
-    }
-
-    // Simpan nomor sementara, tunggu nama tampilan dari keluarga
-    stateChatKeluarMenungguNama[familyJid] = { nomorInput: nomorInput.trim(), jidTujuan };
-    await kirimPesan(familyJid,
-      `Nama apa yang ingin ditampilkan kepada kontak *${'+' + jidTujuan.replace('@s.whatsapp.net', '')}*?\n` +
-      `(Nama ini yang akan muncul saat Anda berkomunikasi dengan mereka)`
-    );
-  } finally {
-    bridgeLock[familyJid] = false;
-  }
-}
-
-/**
- * Keluarga sudah memberikan nama tampilan — lanjutkan koneksi chat keluar.
- */
-async function mulaiChatKeluar(familyJid, keluarga, jidTujuan, namaTampil) {
-  while (bridgeLock[familyJid]) await delay(50);
-  bridgeLock[familyJid] = true;
-  try {
-    const nomorTampil = '+' + jidTujuan.replace('@s.whatsapp.net', '');
-    await kirimPesan(familyJid, `⌛︎ Menghubungkan Anda ke *${nomorTampil}*, mohon menunggu sebentar.`);
-
-    // Kirim salam pembuka ke kontak (tanpa menyebut nama anggota keluarga)
-    await kirimPesan(jidTujuan,
-      `Halo! Saya ${NAMA_BOT}, sistem komunikasi privat ${NAMA_KELUARGA}.\n` +
-      `ⓘ Anda terhubung dengan saluran komunikasi privat. Silakan tunggu sebentar.`
-    );
-    await delay(1500);
-    await kirimPesan(jidTujuan, `ⓘ Anda telah terhubung. Silakan mulai percakapan.`);
-
-    await mulaiLiveChatBridge(
-      familyJid,
-      { guestJid: jidTujuan, namaLengkap: nomorTampil, tujuan: 'Dihubungi oleh keluarga', namaPanggilanKeluarga: namaTampil },
-      { kirimPesanKeGuest: false }
-    );
-    console.log(`[CHAT-KELUAR] ${namaTampil} (${familyJid}) menghubungi ${jidTujuan}`);
-  } finally {
-    bridgeLock[familyJid] = false;
-  }
-}
-
-/**
- * Keluarga menghubungi balik tamu lama via kode tamu.
- */
-async function tanganiPanggilBalik(familyJid, kodeInput, keluarga) {
-  while (bridgeLock[familyJid]) await delay(50);
-  bridgeLock[familyJid] = true;
-  try {
-    const bridgeAktif = stateBridge[familyJid];
-    const konfirmasiAktif = konfirmasiPending[familyJid];
-    if ((bridgeAktif && bridgeAktif.active) || konfirmasiAktif) {
-      await kirimPesan(familyJid, `ⓘ Selesaikan dulu sesi/konfirmasi yang sedang berjalan.`);
-      return;
-    }
-
-    const record = riwayatTamu[kodeInput];
-    if (!record) {
-      await kirimPesan(familyJid, `ⓘ Kode tamu "*${kodeInput}*" tidak ditemukan.`);
-      return;
-    }
-    if (record.targetKeluargaNomor !== familyJid) {
-      await kirimPesan(familyJid, `ⓘ Kode tamu ini bukan milik Anda.`);
-      return;
-    }
-
-    await kirimPesan(record.guestJid,
-      `ⓘ *${record.namaPanggilanKeluarga || keluarga.panggilanUtama}* menghubungi Anda kembali mengenai:\n_${record.tujuan}_`
-    );
-    await mulaiLiveChatBridge(familyJid, {
-      guestJid: record.guestJid,
-      namaLengkap: record.namaLengkap,
-      tujuan: record.tujuan,
-      namaPanggilanKeluarga: record.namaPanggilanKeluarga,
-    });
-  } finally {
-    bridgeLock[familyJid] = false;
-  }
-}
-
-// ============================================================
-// 11. HANDLER PESAN UTAMA
+// 12. TANDAI DIBACA
 // ============================================================
 
 async function tandaiDibaca(message) {
@@ -1213,36 +1230,31 @@ async function tandaiDibaca(message) {
   } catch (_) { /* abaikan error read receipt */ }
 }
 
-async function handlePesanMasuk(message) {
-  const jid    = message.key?.remoteJid;
-  const jidAlt = message.key?.remoteJidAlt;
+// ============================================================
+// 13. HANDLER PESAN MASUK
+// ============================================================
 
-  if (!jid || jid.endsWith('@g.us')) return; // abaikan grup
-  if (message.key?.fromMe) return;           // abaikan pesan dari bot sendiri
+async function handlePesanMasuk(message) {
+  const jid    = message.key.remoteJid;
+  const jidAlt = message.key.remoteJidAlt;
+  if (!jid || jid.endsWith('@g.us') || jid === 'status@broadcast' || message.key.fromMe) return;
 
   const msg = message.message;
-  if (!msg) return;
-
-  // Ekstrak teks dari berbagai jenis pesan
   const teks =
-    msg.conversation ||
-    msg.extendedTextMessage?.text ||
-    msg.imageMessage?.caption ||
-    msg.videoMessage?.caption ||
-    msg.documentMessage?.caption ||
-    msg.documentWithCaptionMessage?.message?.documentMessage?.caption ||
-    msg.buttonsResponseMessage?.selectedButtonId ||
-    msg.listResponseMessage?.singleSelectReply?.selectedRowId ||
-    '';
+    msg?.conversation ||
+    msg?.extendedTextMessage?.text ||
+    msg?.imageMessage?.caption ||
+    msg?.videoMessage?.caption ||
+    msg?.documentMessage?.caption || '';
 
   const pesanMedia = apakahPesanMedia(msg);
-  if (!teks && !pesanMedia) return; // abaikan pesan kosong/protokol
+  if (!teks && !pesanMedia) return;
 
   const teksUpper = teks.trim().toUpperCase();
   const teksLower = teks.trim().toLowerCase();
   console.log(`[PESAN] ${jid}: "${pesanMedia ? labelJenisMedia(msg) : teks.substring(0, 80)}"`);
 
-  // ── BLOK A: Anggota Keluarga ──────────────────────────────────────────────
+  // ── BLOK A: Anggota Keluarga ──
   const keluargaPengirim = cariKeluargaByJid(jid, jidAlt);
   if (keluargaPengirim) {
     const familyJid = keluargaPengirim.nomor;
@@ -1257,7 +1269,7 @@ async function handlePesanMasuk(message) {
       return;
     }
 
-    // ── Panggil balik tamu lama via kode tamu ──
+    // ── Panggil balik tamu lama pakai kode tamu (mis. "#1David09072026") ──
     if (/^#\d/.test(teksTrim)) {
       const dipilihDariAntrean = await pilihTamuDariAntreanByKode(familyJid, teksTrim);
       if (!dipilihDariAntrean) {
@@ -1266,14 +1278,14 @@ async function handlePesanMasuk(message) {
       return;
     }
 
-    // ── Keluarga ingin chat ke nomor baru ──
+    // ── Keluarga menghubungi kontak baru: "Chat 08123456789" ──
     const cocokChat = teksTrim.match(/^chat\s+([\d+][\d+\-\s()]{6,})$/i);
     if (cocokChat) {
       await tanganiPermintaanChatKeluar(familyJid, keluargaPengirim, cocokChat[1]);
       return;
     }
 
-    // ── Menunggu konfirmasi tamu ──
+    // ── Menunggu konfirmasi: tamu BELUM terhubung ──
     if (konfirmasiPending[familyJid] && !bridgeLock[familyJid]) {
       bridgeLock[familyJid] = true;
       try {
@@ -1290,7 +1302,7 @@ async function handlePesanMasuk(message) {
           clearTimeout(pending.timer);
           konfirmasiPending[familyJid] = null;
           await kirimPesan(pending.guestJid,
-            `ⓘ Mohon maaf, *${pending.namaPanggilanKeluarga || keluargaPengirim.panggilanUtama}* sedang sibuk. Terima kasih.`
+            `ⓘ Mohon maaf, *${pending.namaPanggilanKeluarga || keluargaPengirim.panggilanUtama}* sedang sibuk dan belum dapat dihubungi saat ini. Terima kasih.`
           );
           await kirimPesan(familyJid, `✓ Permintaan tamu telah ditolak.`);
           delete stateScreening[pending.guestJid];
@@ -1298,12 +1310,13 @@ async function handlePesanMasuk(message) {
           await mintaKonfirmasiBerikutnya(familyJid);
           return;
         }
-
         const antreanSaatIni = antreanTamu[familyJid] || [];
         if (antreanSaatIni.length > 0) {
           await kirimDaftarTungguKeKeluarga(familyJid);
         } else {
-          await kirimPesan(familyJid, `ⓘ Ada tamu menunggu. Ketik *Y* untuk menerima, *N* untuk menolak.`);
+          await kirimPesan(familyJid,
+            `ⓘ Ada tamu menunggu balasan Anda.\nKetik *Y* untuk menerima, atau *N* untuk menolak.`
+          );
         }
         return;
       } finally {
@@ -1317,7 +1330,7 @@ async function handlePesanMasuk(message) {
     const bridge = stateBridge[familyJid];
     if (!bridge || !bridge.active) return;
 
-    // ── N = mengakhiri sesi live chat (menggantikan EXIT) ──
+    // ── N = mengakhiri sesi live chat ──
     if (!pesanMedia && teksLower === 'n') {
       await akhiriLiveChatBridge(familyJid, false);
       return;
@@ -1330,26 +1343,23 @@ async function handlePesanMasuk(message) {
     if (pesanMedia) {
       await teruskanPesanMedia(bridge.guestJid, message, `*${keluargaPengirim.panggilanUtama}:*`);
     } else {
-      bufferDanKirimPesan(familyJid, bridge.guestJid, teksTrim, `*${keluargaPengirim.panggilanUtama}:*`);
+      bufferDanKirimPesan(familyJid, bridge.guestJid, teks, `*${keluargaPengirim.panggilanUtama}:*`);
     }
     return;
   }
 
-  // ── BLOK B: Tamu / kontak yang dihubungi keluarga ─────────────────────────
+  // ── BLOK B: Tamu / kontak yang dihubungi keluarga (nomor asing) ──
   const nomorJidMasuk    = nomorDariJid(jid);
   const nomorJidAltMasuk = nomorDariJid(jidAlt);
-
-  // Cek apakah tamu sedang dalam bridge aktif
   const bridgeEntry = Object.entries(stateBridge).find(([, val]) => {
     if (!val || !val.active) return false;
     const nomorBridge = nomorDariJid(val.guestJid);
     return nomorBridge === nomorJidMasuk || (nomorJidAltMasuk && nomorBridge === nomorJidAltMasuk);
   });
-
   if (bridgeEntry) {
     const [familyJid, bridgeVal] = bridgeEntry;
 
-    // Tandai pesan tamu sebagai dibaca (read receipt)
+    // Tandai pesan tamu sebagai dibaca
     await tandaiDibaca(message);
 
     // Verifikasi file/link jika tamu mengirim media atau link
@@ -1357,8 +1367,6 @@ async function handlePesanMasuk(message) {
       const cekFilePesan = await verifikasiFile(message);
       if (!cekFilePesan.boleh) {
         await kirimPesan(jid, `ⓘ File yang Anda kirim tidak dapat diteruskan: ${cekFilePesan.alasan}`);
-        const keluarga = DATABASE_KELUARGA.find(a => a.nomor === familyJid);
-        const panggilan = keluarga?.panggilanUtama || 'Anggota Keluarga';
         await kirimPesan(familyJid, `[KEAMANAN] File dari tamu *${stateScreening[jid]?.namaLengkap || 'Tamu'}* diblokir: ${cekFilePesan.alasan}`);
         console.log(`[KEAMANAN] File diblokir dari ${jid}: ${cekFilePesan.alasan}`);
         return;
@@ -1373,8 +1381,8 @@ async function handlePesanMasuk(message) {
       }
     }
 
-    const namaLabel = stateScreening[jid]?.namaLengkap || nomorJidMasuk || 'Tamu';
-
+    const namaLabel = stateScreening[jid]?.namaLengkap
+      || (bridgeVal.dimulaiOlehKeluarga ? '+' + nomorDariJid(jid) : 'Tamu');
     pasangBridgeTimeout(familyJid);
     if (pesanMedia) {
       await teruskanPesanMedia(familyJid, message, `*${namaLabel}:*`);
@@ -1384,38 +1392,32 @@ async function handlePesanMasuk(message) {
     return;
   }
 
-  // ── BLOK C: Tamu dalam antrean ────────────────────────────────────────────
+  // ── Batal: tamu yang MASIH menunggu ──
+  if (teksLower === 'batal' && stateScreening[jid]?.step === 'selesai') {
+    const berhasil = await batalkanTamuMenunggu(jid);
+    if (berhasil) {
+      delete stateScreening[jid];
+      await kirimPesan(jid, `ⓘ Baik, permintaan Anda telah dibatalkan.`);
+    } else {
+      await kirimPesan(jid, `ⓘ Permintaan Anda sedang diproses dan tidak dapat dibatalkan lagi.`);
+    }
+    return;
+  }
+
+  // Cek apakah tamu dalam antrean
   const dalamAntrean = Object.values(antreanTamu).some(a => a?.some(t => t.guestJid === jid));
   if (dalamAntrean) {
     for (const [, antrean] of Object.entries(antreanTamu)) {
       const posisi = antrean?.findIndex(t => t.guestJid === jid) + 1;
       if (posisi > 0) {
-        await kirimPesan(jid, `⌛︎ Anda masih di antrean posisi *#${posisi}*. Mohon bersabar.\n_Ketik *Batal* untuk membatalkan._`);
+        await kirimPesan(jid, `⌛︎ Anda masih di antrean posisi *#${posisi}*. Mohon bersabar.`);
         break;
       }
     }
     return;
   }
 
-  // ── BLOK D: Tamu dalam konfirmasi menunggu ────────────────────────────────
-  const dalamKonfirmasi = Object.values(konfirmasiPending).some(p => p?.guestJid === jid);
-  if (dalamKonfirmasi) {
-    if (teksLower === 'batal') {
-      const berhasil = await batalkanTamuMenunggu(jid);
-      if (berhasil) {
-        stateScreening[jid] = { step: 0, pesanPertama: '' };
-        delete riwayatChatAI[jid];
-        await kirimPesan(jid, `ⓘ Baik, permintaan Anda telah dibatalkan.`);
-      } else {
-        await kirimPesan(jid, `ⓘ Permintaan Anda sedang diproses dan tidak dapat dibatalkan lagi.`);
-      }
-    } else {
-      await kirimPesan(jid, `⌛︎ Formulir sudah diterima. Mohon tunggu giliran Anda.\n_Ketik *Batal* untuk membatalkan._`);
-    }
-    return;
-  }
-
-  // ── BLOK E: Deteksi Kurir ─────────────────────────────────────────────────
+  // ── Deteksi Kurir (bypass skrining) ──
   const sedangSkrining = stateScreening[jid] && stateScreening[jid].step !== 'selesai' && stateScreening[jid].step !== 0;
   const deteksi = sedangSkrining ? null : deteksiKurir(teks);
   if (deteksi) {
@@ -1425,25 +1427,25 @@ async function handlePesanMasuk(message) {
       await kirimPesan(k.nomor,
         `[NOTIFIKASI PAKET]\n\nKurir *${deteksi.namaKurir}*\nPesan kurir:\n_${teks}_\n\nKontak: ${jid.replace('@s.whatsapp.net', '')}`
       );
-      await kirimPesan(jid, `✓ *Konfirmasi Diterima*\nPesan untuk *${k.namaResmi}* diterima. Berikut kontak yang bisa dihubungi langsung:`);
+      await kirimPesan(jid,
+        `✓ *Konfirmasi Diterima*\nPesan untuk *${k.namaResmi}* diterima. Berikut kontak yang bisa dihubungi langsung:`
+      );
       await delay(500);
       await kirimKontakVCard(jid, k);
     } else {
       await kirimPesan(jid, `✓ Pesan kurir diterima. Mohon sebutkan nama penerima paket.`);
       for (const anggota of DATABASE_KELUARGA) {
         await kirimPesan(anggota.nomor,
-          `[NOTIFIKASI PAKET]\nKurir *${deteksi.namaKurir}* -- nama penerima tidak terdeteksi.\n_${teks}_`
+          `[NOTIFIKASI PAKET]\nKurir *${deteksi.namaKurir}* — nama penerima tidak terdeteksi.\n_${teks}_`
         );
       }
     }
     return;
   }
 
-  // ── BLOK F: Skrining / AI Chat ────────────────────────────────────────────
+  // ── Skrining / AI Chat ──
   const screenState = stateScreening[jid];
-
   if (!screenState) {
-    // Tamu baru
     console.log(`[GATEKEEPER] Tamu baru: ${jid}`);
 
     // Verifikasi file jika tamu pertama kali kirim media
@@ -1458,25 +1460,14 @@ async function handlePesanMasuk(message) {
     await mulaiInteraksiTamu(jid, teks || labelJenisMedia(msg));
     return;
   }
-
   if (screenState.step === 'selesai') {
-    await kirimPesan(jid, `ⓘ Formulir sudah diterima. Mohon tunggu giliran Anda.\n_Ketik *Batal* untuk membatalkan._`);
+    await kirimPesan(jid, `ⓘ Formulir sudah diterima. Mohon tunggu giliran Anda.\n_Ketik *Batal* untuk membatalkan permintaan Anda._`);
     return;
   }
 
-  // Tamu dalam proses skrining — verifikasi file/link jika ada media
-  if (pesanMedia) {
-    const cekFile = await verifikasiFile(message);
-    if (!cekFile.boleh) {
-      await kirimPesan(jid, `ⓘ File yang Anda kirim tidak dapat diterima: ${cekFile.alasan}`);
-      return;
-    }
-    // Media diterima tapi tidak relevan untuk skrining — abaikan
-    if (screenState.step === 0) {
-      // Tamu di mode AI chat — forward media
-      // (Catatan: Gemini tidak bisa proses media secara langsung di sini)
-      await kirimPesan(jid, `ⓘ Maaf, saya hanya dapat memproses pesan teks. Silakan ketik pertanyaan Anda.`);
-    }
+  // Tamu di step 0 (mode AI) kirim media — tolak dengan ramah
+  if (pesanMedia && screenState.step === 0) {
+    await kirimPesan(jid, `ⓘ Maaf, saya hanya dapat memproses pesan teks. Silakan ketik pertanyaan Anda.`);
     return;
   }
 
@@ -1484,7 +1475,7 @@ async function handlePesanMasuk(message) {
 }
 
 // ============================================================
-// 12. KONEKSI BAILEYS
+// 14. KONEKSI BAILEYS (PAIRING CODE — STABIL CLOUD)
 // ============================================================
 
 async function mulaiKoneksi() {
@@ -1492,6 +1483,10 @@ async function mulaiKoneksi() {
 
   const { state: authState, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
 
+  // Ambil versi protokol WhatsApp Web terbaru — WAJIB untuk pairing code.
+  // Baileys yang di-pin ke versi lama akan ditolak server WA saat pairing
+  // (server WA menganggap kode/koneksi tidak valid, padahal versi protokolnya
+  // yang usang), gejalanya persis "kode selalu salah" walau sudah dimasukkan benar.
   let versiWA;
   try {
     const { version, isLatest } = await fetchLatestBaileysVersion();
@@ -1507,16 +1502,22 @@ async function mulaiKoneksi() {
     logger: pino({ level: 'silent' }),
     printQRInTerminal: false,
     connectTimeoutMs: 60000,
-    keepAliveIntervalMs: 10000,
-    defaultQueryTimeoutMs: 0,
-    qrTimeout: 300000,
+    keepAliveIntervalMs: 10000,   // ping ke WA setiap 10 detik agar koneksi tidak dianggap idle
+    defaultQueryTimeoutMs: 0,     // tidak ada batas waktu untuk query — penting saat pairing lambat
+    qrTimeout: 300000,            // ← FIX UTAMA: perpanjang QR timer ke 5 menit
+                                  // Baileys menjalankan QR timer (default 60 detik) bersamaan dengan
+                                  // pairing code. Saat timer habis, koneksi diputus paksa SEBELUM
+                                  // handshake companion_finish selesai → "gagal menautkan".
     syncFullHistory: false,
     markOnlineOnConnect: false,
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  // ── Pairing Code ──────────────────────────────────────────────────────────
+  // ── Minta Pairing Code segera setelah socket dibuat ──────────────────────
+  // Dipanggil SEBELUM server memutuskan kirim QR, bukan setelah QR muncul.
+  // Jeda singkat 1,5 detik agar WebSocket selesai handshake — cukup, Noise
+  // Protocol sudah selesai di layer transport sebelum event JS apapun muncul.
   if (!authState.creds.registered && !sudahMintaPairingCode) {
     sudahMintaPairingCode = true;
     console.log('[PAIRING] Meminta kode pairing (1,5 detik)...');
@@ -1527,26 +1528,26 @@ async function mulaiKoneksi() {
       const nomorBersih = NOMOR_BOT.replace(/[^0-9]/g, '');
       const pairingCode = await sock.requestPairingCode(nomorBersih);
 
-      console.log('\n+------------------------------------------+');
-      console.log('|       KODE PAIRING WHATSAPP              |');
-      console.log('+------------------------------------------+');
-      console.log(`|  KODE: ${pairingCode}                    |`);
-      console.log('+------------------------------------------+');
-      console.log('|  1. Buka WhatsApp di HP                  |');
-      console.log('|  2. Pengaturan -> Perangkat Tertaut       |');
-      console.log('|  3. Tautkan dengan Nomor Telepon          |');
-      console.log('|  4. Masukkan kode di atas                |');
-      console.log('+------------------------------------------+\n');
+      console.log('\n╔════════════════════════════════════════╗');
+      console.log('║        KODE PAIRING WHATSAPP            ║');
+      console.log('╠════════════════════════════════════════╣');
+      console.log(`║  KODE: ${pairingCode}                    ║`);
+      console.log('╠════════════════════════════════════════╣');
+      console.log('║  1. Buka WhatsApp di HP                 ║');
+      console.log('║  2. Pengaturan → Perangkat Tertaut       ║');
+      console.log('║  3. Tautkan dengan Nomor Telepon         ║');
+      console.log('║  4. Masukkan kode di atas               ║');
+      console.log('║  (kode berlaku ±60 detik)               ║');
+      console.log('╚════════════════════════════════════════╝\n');
     } catch (err) {
       console.error('[PAIRING] Gagal minta kode:', err.message);
       sudahMintaPairingCode = false;
     }
   }
 
-  // ── Koneksi ──────────────────────────────────────────────────────────────
   sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
     if (connection === 'open') {
-      console.log('\n[KONEKSI] Bot terhubung ke WhatsApp!\n');
+      console.log('\n✅ [KONEKSI] Bot terhubung ke WhatsApp!\n');
       sedangReconnect = false;
       pernahTerhubung = true;
       percobaanPairingGagal = 0;
@@ -1555,7 +1556,7 @@ async function mulaiKoneksi() {
     if (connection === 'close') {
       const statusKode = lastDisconnect?.error?.output?.statusCode;
       const alasan = Object.keys(DisconnectReason).find(k => DisconnectReason[k] === statusKode) || `Kode ${statusKode}`;
-      console.log(`[KONEKSI] Terputus: ${alasan}`);
+      console.log(`⚠️ [KONEKSI] Terputus: ${alasan}`);
 
       sock.ev.removeAllListeners();
       sock = null;
@@ -1590,7 +1591,6 @@ async function mulaiKoneksi() {
     }
   });
 
-  // ── Pesan Masuk ──────────────────────────────────────────────────────────
   sock.ev.on('messages.upsert', async ({ messages, type }) => {
     if (type !== 'notify') return;
     for (const message of messages) {
@@ -1612,12 +1612,9 @@ async function mulaiKoneksi() {
         } catch (err) {
           console.error('[PANGGILAN] Gagal tolak panggilan:', err.message);
         }
-        // Kirim pesan ke pemanggil
         await kirimPesan(call.from,
-          `ⓘ Maaf, sistem ini tidak dapat menerima panggilan telepon.\n` +
-          `Silakan kirim pesan teks jika ingin menghubungi kami.`
+          `ⓘ Maaf, sistem ini tidak dapat menerima panggilan telepon.\nSilakan kirim pesan teks jika ingin menghubungi kami.`
         );
-        // Beri tahu anggota keluarga
         for (const anggota of DATABASE_KELUARGA) {
           await kirimPesan(anggota.nomor,
             `[PANGGILAN MASUK]\nAda panggilan dari *${call.from.replace('@s.whatsapp.net', '')}*.\nPanggilan otomatis ditolak dan penelepon diberi tahu.`
@@ -1634,11 +1631,9 @@ async function mulaiKoneksi() {
         const reactorJid = reaction.key?.remoteJid;
         if (!reactorJid || reaction.key?.fromMe) continue;
 
-        const emoji = reaction.reaction?.text || '';
+        const emoji        = reaction.reaction?.text || '';
         const nomorReactor = nomorDariJid(reactorJid);
 
-        // Cari bridge yang melibatkan JID ini
-        // Cek apakah reaktor adalah keluarga
         const keluargaReactor = cariKeluargaByJid(reactorJid, null);
         if (keluargaReactor) {
           const bridge = stateBridge[keluargaReactor.nomor];
@@ -1648,7 +1643,6 @@ async function mulaiKoneksi() {
           continue;
         }
 
-        // Cek apakah reaktor adalah tamu dalam bridge
         const bridgeEntry = Object.entries(stateBridge).find(([, val]) => {
           if (!val || !val.active) return false;
           return nomorDariJid(val.guestJid) === nomorReactor;
@@ -1672,7 +1666,6 @@ async function mulaiKoneksi() {
         const senderJid = update.key?.remoteJid;
         if (!senderJid || update.key?.fromMe) continue;
 
-        // Cek apakah ini edit pesan (mengandung editedMessage atau protocolMessage)
         const editedMsg =
           update.update.message?.editedMessage ||
           update.update.message?.protocolMessage?.editedMessage;
@@ -1680,14 +1673,11 @@ async function mulaiKoneksi() {
 
         const teksBaru =
           editedMsg.conversation ||
-          editedMsg.extendedTextMessage?.text ||
-          '';
+          editedMsg.extendedTextMessage?.text || '';
         if (!teksBaru) continue;
 
-        const nomorSender = nomorDariJid(senderJid);
-
-        // Cek keluarga
-        const keluargaSender = cariKeluargaByJid(senderJid, null);
+        const nomorSender     = nomorDariJid(senderJid);
+        const keluargaSender  = cariKeluargaByJid(senderJid, null);
         if (keluargaSender) {
           const bridge = stateBridge[keluargaSender.nomor];
           if (bridge && bridge.active) {
@@ -1696,7 +1686,6 @@ async function mulaiKoneksi() {
           continue;
         }
 
-        // Cek tamu
         const bridgeEntry = Object.entries(stateBridge).find(([, val]) => {
           if (!val || !val.active) return false;
           return nomorDariJid(val.guestJid) === nomorSender;
@@ -1714,14 +1703,13 @@ async function mulaiKoneksi() {
 }
 
 // ============================================================
-// 13. ENTRY POINT
+// 15. ENTRY POINT
 // ============================================================
 
-console.log('+------------------------------------------+');
-console.log('|    WHATSAPP GATEKEEPER BOT DIMULAI       |');
-console.log(`|    Nomor Bot: ${NOMOR_BOT.padEnd(26)} |`);
-console.log(`|    Gemini AI: ${geminiEnabled ? 'AKTIF                     ' : 'NONAKTIF (set GEMINI_API_KEY)'} |`);
-console.log('+------------------------------------------+\n');
+console.log('╔════════════════════════════════════════╗');
+console.log('║    WHATSAPP GATEKEEPER BOT DIMULAI      ║');
+console.log(`║    Nomor Bot: ${NOMOR_BOT}            ║`);
+console.log('╚════════════════════════════════════════╝\n');
 
 mulaiKoneksi().catch(err => {
   console.error('[FATAL]', err);
